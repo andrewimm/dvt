@@ -7,6 +7,7 @@ use ratatui::widgets::Paragraph;
 
 use super::app::{App, Tile, TileItem};
 use super::theme::{self, Rgb};
+use crate::filetype::{Category, categorize};
 use crate::fmt;
 use crate::layout::treemap::{FRect, squarify};
 use crate::tree::{Kind, NodeId, Tree};
@@ -87,25 +88,26 @@ fn layout(tree: &Tree, ids: &[NodeId], n_all: usize, total: u64, area: Rect, min
         .collect()
 }
 
-/// Greedy colouring: each tile takes the first shade (from `shade(kind, n)`)
-/// that none of its already-coloured neighbours in the same palette use.
-fn assign_colors(tree: &Tree, tiles: &[Tile], shade: impl Fn(Option<Kind>, usize) -> Rgb) -> Vec<Rgb> {
-    let kind = |item: TileItem| match item {
-        TileItem::Node(id) => Some(tree.get(id).kind),
-        TileItem::Others { .. } => None,
-    };
+/// Greedy colouring: each tile takes the first shade (from `shade(cat, n)`)
+/// that none of its already-coloured neighbours in the same category use.
+fn assign_colors(tree: &Tree, tiles: &[Tile], shade: impl Fn(Option<Category>, usize) -> Rgb) -> Vec<Rgb> {
+    let cats: Vec<Option<Category>> = tiles.iter().map(|t| category(tree, t.item)).collect();
     let mut chosen: Vec<usize> = Vec::with_capacity(tiles.len());
     for (i, t) in tiles.iter().enumerate() {
-        let k = kind(t.item);
-        let taken: Vec<usize> = tiles[..i]
-            .iter()
-            .zip(&chosen)
-            .filter(|(o, _)| theme::same_palette(kind(o.item), k) && touching(o.rect, t.rect))
-            .map(|(_, &c)| c)
+        let taken: Vec<usize> = (0..i)
+            .filter(|&j| cats[j] == cats[i] && touching(tiles[j].rect, t.rect))
+            .map(|j| chosen[j])
             .collect();
         chosen.push((0..).find(|c| !taken.contains(c)).unwrap());
     }
-    tiles.iter().zip(chosen).map(|(t, c)| shade(kind(t.item), c)).collect()
+    cats.into_iter().zip(chosen).map(|(cat, c)| shade(cat, c)).collect()
+}
+
+fn category(tree: &Tree, item: TileItem) -> Option<Category> {
+    match item {
+        TileItem::Node(id) => Some(categorize(tree.get(id).kind, tree.name(id))),
+        TileItem::Others { .. } => None,
+    }
 }
 
 fn touching(a: Rect, b: Rect) -> bool {
@@ -151,7 +153,10 @@ fn draw_tile(buf: &mut Buffer, tree: &Tree, tile: &Tile, base: Rgb, selected: bo
     let ids = tree.largest_children(id, MAX_INNER_TILES);
     let total: u64 = tree.children(id).iter().map(|&c| tree.get(c).disk).sum();
     let tiles = layout(tree, &ids, n_all, total, inner, MIN_INNER_CELLS, MAX_INNER_TILES);
-    let colors = assign_colors(tree, &tiles, |_, c| theme::inner_shade(base, c));
+    let colors = assign_colors(tree, &tiles, |cat, c| match cat {
+        Some(Category::Dir) => theme::inner_shade(base, c),
+        _ => theme::tile_bg(cat, c),
+    });
     for (t, &c) in tiles.iter().zip(&colors) {
         let (kind, name, disk) = label(tree, t.item);
         paint(buf, t.rect, c, &name, disk, kind == Some(Kind::Dir), false);

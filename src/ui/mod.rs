@@ -1,5 +1,6 @@
 mod app;
 mod list_view;
+mod search_view;
 mod theme;
 mod treemap_view;
 
@@ -15,6 +16,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
+use crate::filetype::Category;
 use crate::fmt;
 use crate::scan;
 use crate::tree::flags;
@@ -84,6 +86,7 @@ fn draw(f: &mut Frame, app: &mut App) {
             .areas(f.area());
     draw_header(f, header, app);
     match app.view {
+        _ if app.search.open => search_view::render(f, body, app),
         View::Treemap => treemap_view::render(f, body, app),
         View::List => list_view::render(f, body, app),
     }
@@ -125,6 +128,24 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 
 /// Details of the selected entry, since small tiles can't show their own label.
 fn draw_info(f: &mut Frame, area: Rect, app: &App) {
+    if app.search.open {
+        if let Some(&id) = app.search.results.get(app.search.sel) {
+            let n = app.tree.get(id);
+            f.render_widget(
+                Line::from(vec![
+                    Span::styled(" ▸ ", Style::new().fg(theme::ACCENT)),
+                    Span::styled(tilde(&app.tree.path(id)), Style::new().add_modifier(Modifier::BOLD)),
+                    Span::raw(format!("  {}", fmt::size(n.disk))),
+                ]),
+                area,
+            );
+        }
+        return;
+    }
+    let legend = legend();
+    if app.view == View::Treemap {
+        f.render_widget(legend.clone().right_aligned(), area);
+    }
     let Some(id) = app.selected() else {
         return;
     };
@@ -146,13 +167,51 @@ fn draw_info(f: &mut Frame, area: Rect, app: &App) {
     if let Some(i) = app.selected_index() {
         spans.push(Span::styled(format!("  #{} of {}", i + 1, app.children.len()), theme::dim()));
     }
-    f.render_widget(Line::from(spans), area);
+    let line = Line::from(spans);
+    if app.view == View::Treemap && line.width() + legend.width() + 2 > area.width as usize {
+        // Not enough room for both: the selection details win.
+        f.render_widget(Clear, area);
+    }
+    f.render_widget(line, area);
+}
+
+/// "■ dir ■ media …" in the treemap colours.
+fn legend() -> Line<'static> {
+    let mut spans = Vec::new();
+    for cat in Category::ALL {
+        spans.push(Span::styled("■", Style::new().fg(theme::swatch(cat))));
+        spans.push(Span::styled(format!(" {} ", cat.label()), theme::dim()));
+    }
+    Line::from(spans)
 }
 
 fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let tree = &app.tree;
     let root = tree.get(tree.root());
+    if app.search.open {
+        let s = &app.search;
+        let mut spans = vec![
+            Span::styled(" / ", Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+            Span::raw(s.query.clone()),
+            Span::styled("▏", Style::new().fg(theme::ACCENT)),
+        ];
+        if !s.query.is_empty() {
+            spans.push(Span::styled(
+                format!(
+                    "   {} matches  {} total  {:.0}ms",
+                    fmt::count(s.results.len() as u64),
+                    fmt::size(s.total),
+                    s.took.as_secs_f64() * 1000.0
+                ),
+                theme::dim(),
+            ));
+        }
+        f.render_widget(Line::from(spans), area);
+        let hints = "↑↓ select  ⏎ go to  esc close ";
+        f.render_widget(Line::from(hints).right_aligned().style(theme::dim()), area);
+        return;
+    }
     let mut spans = Vec::new();
     if let Some(msg) = app.message() {
         spans.push(Span::styled(format!(" {msg}"), Style::new().fg(theme::ACCENT)));
@@ -176,8 +235,8 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     }
     let left = Line::from(spans);
     let hints = match app.view {
-        View::Treemap => "←↓↑→ move  ⏎ open  ⌫ up  ⇥ list  ? help  q quit ",
-        View::List => "↑↓ move  ⏎/→ open  ⌫/← up  ⇥ treemap  ? help  q quit ",
+        View::Treemap => "←↓↑→ move  ⏎ open  ⌫ up  ⇥ list  / search  ? help  q quit ",
+        View::List => "↑↓ move  ⏎/→ open  ⌫/← up  ⇥ treemap  / search  ? help  q quit ",
     };
     if left.width() + Span::raw(hints).width() + 2 <= area.width as usize {
         f.render_widget(Line::from(hints).right_aligned().style(theme::dim()), area);
@@ -192,6 +251,7 @@ fn draw_help(f: &mut Frame, area: Rect) {
         ("Backspace / u", "go up (past the start dir too)"),
         ("right click", "go up a directory"),
         ("Tab", "switch between treemap and list"),
+        ("/", "search names below this directory"),
         ("g / G, PgUp/PgDn", "jump in the list"),
         ("r", "rescan the selected directory"),
         ("R", "rescan the current directory"),

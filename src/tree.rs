@@ -121,6 +121,11 @@ impl Tree {
         &self.nodes[id as usize]
     }
 
+    /// Size of the arena, including dead nodes.
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
     pub fn root(&self) -> NodeId {
         self.root
     }

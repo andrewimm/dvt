@@ -1,22 +1,23 @@
 use ratatui::style::{Color, Modifier, Style};
 
-use crate::tree::Kind;
+use crate::filetype::Category;
 
 pub type Rgb = (u8, u8, u8);
 
-const DIRS: [Rgb; 6] = [
-    (52, 92, 158),  // blue
-    (38, 120, 112), // teal
-    (96, 76, 150),  // purple
-    (54, 118, 70),  // green
-    (134, 72, 120), // plum
-    (60, 106, 140), // steel
-];
-const FILES: [Rgb; 3] = [
-    (118, 98, 70),  // khaki
-    (96, 96, 100),  // grey
-    (136, 86, 62),  // rust
-];
+/// Base tile colour per category. Neighbouring tiles of the same category get
+/// lighter or darker shades of it (see `tile_bg`).
+fn base(cat: Category) -> Rgb {
+    match cat {
+        Category::Dir => (52, 92, 158),
+        Category::Media => (150, 62, 120),
+        Category::Archive => (172, 76, 52),
+        Category::Code => (56, 128, 72),
+        Category::Document => (150, 126, 36),
+        Category::Build => (114, 90, 72),
+        Category::Data => (32, 124, 138),
+        Category::Other => (96, 96, 102),
+    }
+}
 const OTHERS: Rgb = (58, 58, 62);
 pub const SELECTED: Rgb = (236, 190, 84);
 
@@ -29,20 +30,26 @@ fn rgb((r, g, b): Rgb) -> Color {
     Color::Rgb(r, g, b)
 }
 
-/// Whether tiles of these kinds draw from the same palette, so neighbours
-/// need different shades.
-pub fn same_palette(a: Option<Kind>, b: Option<Kind>) -> bool {
-    let group = |k: Option<Kind>| k.map(|k| k == Kind::Dir);
-    group(a) == group(b)
-}
-
-/// Background for a tile given its shade index within its palette.
-pub fn tile_bg(kind: Option<Kind>, index: usize) -> Rgb {
-    match kind {
-        Some(Kind::Dir) => DIRS[index % DIRS.len()],
-        Some(_) => FILES[index % FILES.len()],
+/// Background for a tile of category `cat` (`None` for the merged "others"
+/// tile) given its shade index.
+pub fn tile_bg(cat: Option<Category>, index: usize) -> Rgb {
+    const MIX: [f32; 5] = [0.0, -0.2, 0.15, -0.34, 0.28];
+    match cat {
+        Some(c) => mix(base(c), MIX[index % MIX.len()]),
         None => OTHERS,
     }
+}
+
+/// A category's colour for use as text or a swatch on the terminal background.
+pub fn swatch(cat: Category) -> Color {
+    rgb(mix(base(cat), 0.2))
+}
+
+/// Mixes toward white for positive `t`, toward black for negative.
+fn mix(c: Rgb, t: f32) -> Rgb {
+    let (target, t) = if t >= 0.0 { (255.0, t) } else { (0.0, -t) };
+    let m = |v: u8| (v as f32 + (target - v as f32) * t).round() as u8;
+    (m(c.0), m(c.1), m(c.2))
 }
 
 pub fn tile_style(bg: Rgb) -> Style {
@@ -66,12 +73,9 @@ pub fn dim() -> Style {
     Style::new().add_modifier(Modifier::DIM)
 }
 
-/// Shades of a directory tile's colour for the tiles nested inside it.
+/// Shades of a directory tile's colour for directories nested inside it,
+/// all distinct from the tile itself.
 pub fn inner_shade(base: Rgb, index: usize) -> Rgb {
-    // Positive mixes toward white, negative toward black.
     const MIX: [f32; 4] = [0.18, -0.22, 0.32, -0.38];
-    let t = MIX[index % MIX.len()];
-    let (target, t) = if t >= 0.0 { (255.0, t) } else { (0.0, -t) };
-    let mix = |c: u8| (c as f32 + (target - c as f32) * t).round() as u8;
-    (mix(base.0), mix(base.1), mix(base.2))
+    mix(base, MIX[index % MIX.len()])
 }

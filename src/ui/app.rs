@@ -7,10 +7,10 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
-use ratatui::widgets::TableState;
 use rayon::ThreadPool;
 
 use crate::scan::{self, Msg, Request};
+use crate::search::{self as find, Matcher};
 use crate::tree::{NodeId, ROOT, Tree, flags};
 use crate::watch::Watcher;
 
@@ -40,10 +40,30 @@ pub enum Dir {
     Down,
 }
 
+/// The `/` search overlay. Results are the top-most matching entries under
+/// `under`, largest first.
+pub struct Search {
+    pub open: bool,
+    pub query: String,
+    pub under: NodeId,
+    pub results: Vec<NodeId>,
+    pub total: u64,
+    pub sel: usize,
+    pub offset: usize,
+    pub took: Duration,
+    pub area: Rect,
+    stale: bool,
+    last_run: Instant,
+}
+
+/// How often to re-run an open search while scans change the tree.
+const SEARCH_RERUN: Duration = Duration::from_millis(500);
+
 pub struct App {
     pub tree: Tree,
     pub cwd: NodeId,
     pub view: View,
+    pub search: Search,
     /// Children of `cwd`, largest first. Refreshed before every frame.
     pub children: Vec<NodeId>,
     /// The selected child, remembered per directory.
@@ -74,7 +94,7 @@ pub struct App {
 
     /// Written by the views while rendering, read by navigation and the mouse.
     pub tiles: Vec<Tile>,
-    pub list: TableState,
+    pub list_offset: usize,
     pub list_area: Rect,
 }
 
@@ -94,6 +114,19 @@ impl App {
             tree: Tree::new(root),
             cwd: ROOT,
             view: View::Treemap,
+            search: Search {
+                open: false,
+                query: String::new(),
+                under: ROOT,
+                results: Vec::new(),
+                total: 0,
+                sel: 0,
+                offset: 0,
+                took: Duration::ZERO,
+                area: Rect::default(),
+                stale: false,
+                last_run: Instant::now(),
+            },
             children: Vec::new(),
             sel: HashMap::new(),
             show_help: false,
@@ -114,7 +147,7 @@ impl App {
             last_change: Instant::now(),
             last_refresh: HashMap::new(),
             tiles: Vec::new(),
-            list: TableState::default(),
+            list_offset: 0,
             list_area: Rect::default(),
         };
         app.start_scan(ROOT, None, true);
@@ -159,7 +192,121 @@ impl App {
             self.set_cwd(p);
         }
         self.process_changes();
+        if changed && self.search.open {
+            self.search.stale = true;
+        }
         changed
+    }
+
+    // Search
+
+    fn open_search(&mut self) {
+        self.search.open = true;
+        self.search.under = self.cwd;
+        self.run_search(false);
+    }
+
+    /// Re-runs the search. With `keep_selection`, the same entry stays
+    /// selected if it is still a result; otherwise the largest is selected.
+    fn run_search(&mut self, keep_selection: bool) {
+        let s = &mut self.search;
+        if !self.tree.is_live(s.under) {
+            s.under = self.cwd;
+        }
+        let prev = s.results.get(s.sel).copied().filter(|_| keep_selection);
+        let start = Instant::now();
+        match Matcher::new(&s.query) {
+            Some(m) => {
+                let r = self.pool.install(|| find::find(&self.tree, s.under, &m));
+                s.results = r.ids;
+                s.total = r.total;
+            }
+            None => {
+                s.results.clear();
+                s.total = 0;
+            }
+        }
+        s.took = start.elapsed();
+        s.sel = prev.and_then(|id| s.results.iter().position(|&r| r == id)).unwrap_or(0);
+        s.stale = false;
+        s.last_run = Instant::now();
+    }
+
+    fn search_key(&mut self, k: KeyEvent) {
+        let page = self.search.area.height.saturating_sub(2).max(1) as isize;
+        match k.code {
+            KeyCode::Esc => self.search.open = false,
+            KeyCode::Enter => self.jump_to_result(),
+            KeyCode::Up => self.move_result(-1),
+            KeyCode::Down => self.move_result(1),
+            KeyCode::PageUp => self.move_result(-page),
+            KeyCode::PageDown => self.move_result(page),
+            KeyCode::Home => self.search.sel = 0,
+            KeyCode::End => self.move_result(isize::MAX / 2),
+            KeyCode::Backspace => {
+                if self.search.query.pop().is_some() {
+                    self.run_search(false);
+                }
+            }
+            KeyCode::Char(c) if !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+                self.search.query.push(c);
+                self.run_search(false);
+            }
+            _ => {}
+        }
+    }
+
+    fn move_result(&mut self, delta: isize) {
+        let last = self.search.results.len().saturating_sub(1) as isize;
+        self.search.sel = (self.search.sel as isize).saturating_add(delta).clamp(0, last) as usize;
+    }
+
+    /// Closes the search and shows the selected result in its directory.
+    fn jump_to_result(&mut self) {
+        let Some(&id) = self.search.results.get(self.search.sel) else { return };
+        if !self.tree.is_live(id) {
+            self.run_search(false);
+            return;
+        }
+        let Some(parent) = self.tree.parent(id) else { return };
+        self.search.open = false;
+        self.set_cwd(parent);
+        self.sel.insert(parent, id);
+    }
+
+    fn search_mouse(&mut self, m: MouseEvent) -> bool {
+        let area = self.search.area;
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let body_top = area.y + 1;
+                if !area.contains(Position::new(m.column, m.row)) || m.row < body_top {
+                    return false;
+                }
+                let i = self.search.offset + (m.row - body_top) as usize;
+                if i >= self.search.results.len() {
+                    return false;
+                }
+                if i == self.search.sel {
+                    self.jump_to_result();
+                } else {
+                    self.search.sel = i;
+                }
+                true
+            }
+            MouseEventKind::ScrollUp => {
+                self.move_result(-3);
+                true
+            }
+            MouseEventKind::ScrollDown => {
+                self.move_result(3);
+                true
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.search.open = false;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Collects filesystem events and, once they settle, re-reads the
@@ -225,6 +372,9 @@ impl App {
 
     pub fn refresh(&mut self) {
         self.children = self.tree.sorted_children(self.cwd);
+        if self.search.open && self.search.stale && self.search.last_run.elapsed() >= SEARCH_RERUN {
+            self.run_search(true);
+        }
         self.update_watch();
         if self.message.as_ref().is_some_and(|(_, t)| t.elapsed() > MESSAGE_TTL) {
             self.message = None;
@@ -289,7 +439,12 @@ impl App {
             self.show_help = false;
             return;
         }
+        if self.search.open {
+            self.search_key(k);
+            return;
+        }
         match (self.view, k.code) {
+            (_, KeyCode::Char('/')) => self.open_search(),
             (_, KeyCode::Char('q')) => self.quit = true,
             (_, KeyCode::Esc) => {}
             (_, KeyCode::Char('?')) => self.show_help = true,
@@ -323,6 +478,9 @@ impl App {
     }
 
     fn mouse(&mut self, m: MouseEvent) -> bool {
+        if self.search.open {
+            return self.search_mouse(m);
+        }
         let pos = Position::new(m.column, m.row);
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
@@ -348,7 +506,7 @@ impl App {
                         if !self.list_area.contains(pos) || m.row < body_top {
                             return false;
                         }
-                        let i = self.list.offset() + (m.row - body_top) as usize;
+                        let i = self.list_offset + (m.row - body_top) as usize;
                         if i >= self.children.len() {
                             return false;
                         }
@@ -401,7 +559,7 @@ impl App {
     fn set_cwd(&mut self, id: NodeId) {
         self.cwd = id;
         self.children = self.tree.sorted_children(id);
-        *self.list.offset_mut() = 0;
+        self.list_offset = 0;
     }
 
     fn enter(&mut self) {

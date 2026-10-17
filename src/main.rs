@@ -1,6 +1,8 @@
+mod filetype;
 mod fmt;
 mod layout;
 mod scan;
+mod search;
 mod tree;
 mod ui;
 mod watch;
