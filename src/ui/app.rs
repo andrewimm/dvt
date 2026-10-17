@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,8 +10,9 @@ use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 use rayon::ThreadPool;
 
-use crate::scan::{self, Msg};
-use crate::tree::{NodeId, ROOT, Tree};
+use crate::scan::{self, Msg, Request};
+use crate::tree::{NodeId, ROOT, Tree, flags};
+use crate::watch::Watcher;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -39,10 +40,6 @@ pub enum Dir {
     Down,
 }
 
-struct Scan {
-    started: Instant,
-}
-
 pub struct App {
     pub tree: Tree,
     pub cwd: NodeId,
@@ -55,12 +52,25 @@ pub struct App {
     pub quit: bool,
     message: Option<(String, Instant)>,
 
-    scan: Option<Scan>,
+    /// Full scans in flight, and when the current busy period started.
+    scans: usize,
+    scan_started: Option<Instant>,
     pub last_scan: Option<Duration>,
     opts: scan::Options,
     pool: Arc<ThreadPool>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
+
+    /// Draw directories' contents inside their treemap tiles.
+    pub nested: bool,
+    /// Live updates: `watched` is the directory being watched and whether the
+    /// watch is recursive.
+    pub live: bool,
+    watcher: Option<Watcher>,
+    pub watched: Option<(NodeId, bool)>,
+    changed: HashSet<PathBuf>,
+    last_change: Instant,
+    last_refresh: HashMap<NodeId, Instant>,
 
     /// Written by the views while rendering, read by navigation and the mouse.
     pub tiles: Vec<Tile>,
@@ -69,9 +79,16 @@ pub struct App {
 }
 
 const MESSAGE_TTL: Duration = Duration::from_secs(3);
+/// Directories with more entries than this below them are watched
+/// non-recursively, since a recursive watch costs one inotify watch per directory.
+const RECURSIVE_WATCH_LIMIT: u32 = 200_000;
+/// Wait for changes to settle before re-reading.
+const CHANGE_DEBOUNCE: Duration = Duration::from_millis(300);
+/// Re-read any one directory at most this often.
+const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 impl App {
-    pub fn new(root: PathBuf, opts: scan::Options) -> Self {
+    pub fn new(root: PathBuf, opts: scan::Options, live: bool) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
         let mut app = App {
             tree: Tree::new(root),
@@ -82,28 +99,37 @@ impl App {
             show_help: false,
             quit: false,
             message: None,
-            scan: None,
+            scans: 0,
+            scan_started: None,
             last_scan: None,
             opts,
             pool: scan::pool(),
             tx,
             rx,
+            nested: false,
+            live,
+            watcher: if live { Watcher::new() } else { None },
+            watched: None,
+            changed: HashSet::new(),
+            last_change: Instant::now(),
+            last_refresh: HashMap::new(),
             tiles: Vec::new(),
             list: TableState::default(),
             list_area: Rect::default(),
         };
-        app.start_scan(ROOT);
+        app.start_scan(ROOT, None, true);
         app
     }
 
-    fn start_scan(&mut self, id: NodeId) {
-        let path = self.tree.path(id);
-        scan::spawn(path, id, self.tree.ids.clone(), self.opts, self.pool.clone(), self.tx.clone());
-        self.scan = Some(Scan { started: Instant::now() });
+    fn start_scan(&mut self, id: NodeId, skip: Option<std::ffi::OsString>, send_root: bool) {
+        let req = Request { path: self.tree.path(id), id, skip, send_root };
+        scan::spawn(req, self.tree.ids.clone(), self.opts, &self.pool, self.tx.clone());
+        self.scans += 1;
+        self.scan_started.get_or_insert_with(Instant::now);
     }
 
     pub fn scan_elapsed(&self) -> Option<Duration> {
-        self.scan.as_ref().map(|s| s.started.elapsed())
+        self.scan_started.map(|t| t.elapsed())
     }
 
     /// Applies pending scanner messages for up to `budget`. Returns whether
@@ -114,18 +140,92 @@ impl App {
         while let Ok(msg) = self.rx.try_recv() {
             changed = true;
             if matches!(msg, Msg::Done) {
-                self.last_scan = self.scan.take().map(|s| s.started.elapsed());
+                self.scans -= 1;
+                if self.scans == 0 {
+                    self.last_scan = self.scan_started.take().map(|t| t.elapsed());
+                }
             }
             self.tree.apply(msg);
             if start.elapsed() >= budget {
                 break;
             }
         }
+        for id in self.tree.take_pending_scans() {
+            self.start_scan(id, None, false);
+        }
+        // The directory being viewed may have been deleted.
+        while !self.tree.is_live(self.cwd) {
+            let Some(p) = self.tree.parent(self.cwd) else { break };
+            self.set_cwd(p);
+        }
+        self.process_changes();
         changed
+    }
+
+    /// Collects filesystem events and, once they settle, re-reads the
+    /// directories that contain them.
+    fn process_changes(&mut self) {
+        let Some(w) = &self.watcher else { return };
+        let mut got = false;
+        while let Ok(path) = w.events.try_recv() {
+            self.changed.insert(path);
+            got = true;
+        }
+        if got {
+            self.last_change = Instant::now();
+        }
+        if self.changed.is_empty() || self.last_change.elapsed() < CHANGE_DEBOUNCE {
+            return;
+        }
+        let mut dirs = HashSet::new();
+        for path in std::mem::take(&mut self.changed) {
+            // A change to an entry means its parent directory's listing changed.
+            let Some(parent) = path.parent() else { continue };
+            if let Some(id) = self.tree.lookup(parent) {
+                dirs.insert((id, path));
+            }
+        }
+        let mut refreshed = HashSet::new();
+        for (id, path) in dirs {
+            let n = self.tree.get(id);
+            // Directories still being scanned will be read soon anyway.
+            if !n.is_dir() || !n.has(flags::SCANNED) || refreshed.contains(&id) {
+                continue;
+            }
+            if self.last_refresh.get(&id).is_some_and(|t| t.elapsed() < REFRESH_INTERVAL) {
+                self.changed.insert(path); // try again later
+                continue;
+            }
+            refreshed.insert(id);
+            self.last_refresh.insert(id, Instant::now());
+            scan::refresh(self.tree.path(id), id, self.opts, &self.pool, self.tx.clone());
+        }
+    }
+
+    /// Points the watcher at the current directory. Whether to watch
+    /// recursively is decided once scanning has settled the directory's size;
+    /// until then (and during later scans) a non-recursive watch is used, or
+    /// the existing one kept.
+    fn update_watch(&mut self) {
+        let Some(w) = &self.watcher else { return };
+        let target = match (self.live, self.watched) {
+            (false, None) => return,
+            (false, Some(_)) => None,
+            (true, Some((id, _))) if id == self.cwd && self.scans > 0 => return,
+            (true, _) => {
+                let recursive = self.scans == 0 && self.tree.get(self.cwd).items <= RECURSIVE_WATCH_LIMIT;
+                Some((self.cwd, recursive))
+            }
+        };
+        if target != self.watched {
+            w.watch(target.map(|(id, rec)| (self.tree.path(id), rec)));
+            self.watched = target;
+        }
     }
 
     pub fn refresh(&mut self) {
         self.children = self.tree.sorted_children(self.cwd);
+        self.update_watch();
         if self.message.as_ref().is_some_and(|(_, t)| t.elapsed() > MESSAGE_TTL) {
             self.message = None;
         }
@@ -199,6 +299,11 @@ impl App {
             (_, KeyCode::Char('r')) => self.rescan(self.selected().filter(|&id| self.tree.get(id).is_dir())),
             (_, KeyCode::Char('R')) => self.rescan(Some(self.cwd)),
             (_, KeyCode::Char('y')) => self.copy_path(),
+            (_, KeyCode::Char('n')) => {
+                self.nested = !self.nested;
+                self.say(if self.nested { "nested treemap on" } else { "nested treemap off" });
+            }
+            (_, KeyCode::Char('w')) => self.toggle_live(),
 
             (View::Treemap, KeyCode::Left | KeyCode::Char('h')) => self.move_spatial(Dir::Left),
             (View::Treemap, KeyCode::Right | KeyCode::Char('l')) => self.move_spatial(Dir::Right),
@@ -281,6 +386,18 @@ impl App {
         };
     }
 
+    fn toggle_live(&mut self) {
+        if self.watcher.is_none() {
+            self.watcher = Watcher::new();
+            if self.watcher.is_none() {
+                self.say("live updates are not available here");
+                return;
+            }
+        }
+        self.live = !self.live;
+        self.say(if self.live { "live updates on" } else { "live updates off" });
+    }
+
     fn set_cwd(&mut self, id: NodeId) {
         self.cwd = id;
         self.children = self.tree.sorted_children(id);
@@ -314,7 +431,17 @@ impl App {
                 self.set_cwd(p);
                 self.sel.insert(p, from);
             }
-            None => self.say("already at the scan root"),
+            None => {
+                let from = self.cwd;
+                match self.tree.grow_up() {
+                    Some((root, skip)) => {
+                        self.start_scan(root, Some(skip), true);
+                        self.set_cwd(root);
+                        self.sel.insert(root, from);
+                    }
+                    None => self.say("already at the top of the filesystem"),
+                }
+            }
         }
     }
 
@@ -366,16 +493,12 @@ impl App {
             self.say("select a directory to rescan");
             return;
         };
-        if self.scan.is_some() {
-            self.say("a scan is already running");
-            return;
-        }
         // The old nodes below `id` are discarded, so step out of them first.
         if self.is_ancestor(id, self.cwd) {
             self.set_cwd(id);
         }
         self.tree.reset(id);
-        self.start_scan(id);
+        self.start_scan(id, None, true);
     }
 
     fn is_ancestor(&self, ancestor: NodeId, mut id: NodeId) -> bool {

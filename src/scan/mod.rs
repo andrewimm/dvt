@@ -8,7 +8,7 @@
 mod platform;
 
 use std::collections::HashSet;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -25,7 +25,9 @@ pub enum Msg {
     Root { id: NodeId, kind: Kind, disk: u64, error: bool },
     /// The entries of directory `dir`, which get ids `first..first + entries.len()`.
     Batch { dir: NodeId, first: NodeId, entries: Vec<Entry>, error: bool },
-    /// Every directory under the root has been read.
+    /// A fresh listing of an already-scanned directory (see `refresh`).
+    Refresh { dir: NodeId, entries: Vec<Entry>, error: bool },
+    /// A scan started with `spawn` has read every directory under its root.
     Done,
 }
 
@@ -40,6 +42,17 @@ pub struct Entry {
 pub struct Options {
     /// Don't descend into directories on other filesystems.
     pub one_file_system: bool,
+}
+
+pub struct Request {
+    pub path: PathBuf,
+    /// The existing node to scan into.
+    pub id: NodeId,
+    /// A top-level entry to leave out, because the tree already has it.
+    pub skip: Option<OsString>,
+    /// Report the root's own size with `Msg::Root`. Off when the node's size
+    /// is already known, as for directories found by a refresh.
+    pub send_root: bool,
 }
 
 pub fn pool() -> Arc<ThreadPool> {
@@ -63,26 +76,42 @@ struct Ctx {
     seen_links: Mutex<HashSet<(u64, u64)>>,
 }
 
-/// Scans `path` into the existing node `id` on a background thread. Sends
-/// `Msg::Done` when finished.
-pub fn spawn(path: PathBuf, id: NodeId, ids: Arc<AtomicU32>, opts: Options, pool: Arc<ThreadPool>, tx: Sender<Msg>) {
-    thread::spawn(move || {
-        let meta = fs::symlink_metadata(&path);
+/// Scans `req.path` recursively into node `req.id` on the pool, then sends
+/// `Msg::Done`.
+pub fn spawn(req: Request, ids: Arc<AtomicU32>, opts: Options, pool: &ThreadPool, tx: Sender<Msg>) {
+    pool.spawn(move || {
+        let meta = fs::symlink_metadata(&req.path);
         let (kind, disk, root_dev) = match &meta {
             Ok(m) => (kind_of(m.file_type()), platform::disk_usage(m), platform::device(m)),
             Err(_) => (Kind::Other, 0, None),
         };
-        let _ = tx.send(Msg::Root { id, kind, disk, error: meta.is_err() });
+        if req.send_root {
+            let _ = tx.send(Msg::Root { id: req.id, kind, disk, error: meta.is_err() });
+        }
         if kind == Kind::Dir {
             let ctx = Ctx { tx: tx.clone(), ids, opts, root_dev, seen_links: Mutex::new(HashSet::new()) };
-            pool.scope(|s| walk(s, path, id, &ctx));
+            rayon::scope(|s| walk(s, req.path, req.id, req.skip.as_deref(), &ctx));
         }
         let _ = tx.send(Msg::Done);
     });
 }
 
-fn walk<'s>(s: &Scope<'s>, path: PathBuf, id: NodeId, ctx: &'s Ctx) {
-    let (entries, error) = read_dir(&path, ctx);
+/// Re-reads the single directory `path` (node `id`) without recursing and
+/// sends the listing as `Msg::Refresh`.
+pub fn refresh(path: PathBuf, id: NodeId, opts: Options, pool: &ThreadPool, tx: Sender<Msg>) {
+    pool.spawn(move || {
+        let root_dev = fs::symlink_metadata(&path).ok().and_then(|m| platform::device(&m));
+        let ctx = Ctx { tx, ids: Arc::default(), opts, root_dev, seen_links: Mutex::default() };
+        let (entries, error) = read_dir(&path, &ctx);
+        let _ = ctx.tx.send(Msg::Refresh { dir: id, entries, error });
+    });
+}
+
+fn walk<'s>(s: &Scope<'s>, path: PathBuf, id: NodeId, skip: Option<&OsStr>, ctx: &'s Ctx) {
+    let (mut entries, error) = read_dir(&path, ctx);
+    if let Some(skip) = skip {
+        entries.retain(|e| e.name != skip);
+    }
     let first = ctx.ids.fetch_add(entries.len() as u32, Ordering::Relaxed);
     let subdirs: Vec<(PathBuf, NodeId)> = entries
         .iter()
@@ -94,7 +123,7 @@ fn walk<'s>(s: &Scope<'s>, path: PathBuf, id: NodeId, ctx: &'s Ctx) {
         return; // receiver gone, the app is quitting
     }
     for (child, child_id) in subdirs {
-        s.spawn(move |s| walk(s, child, child_id, ctx));
+        s.spawn(move |s| walk(s, child, child_id, None, ctx));
     }
 }
 

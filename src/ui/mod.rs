@@ -17,7 +17,7 @@ use ratatui::{DefaultTerminal, Frame};
 
 use crate::fmt;
 use crate::scan;
-use crate::tree::{ROOT, flags};
+use crate::tree::flags;
 use app::{App, View};
 
 /// Minimum time between frames while a scan is updating the tree.
@@ -25,8 +25,8 @@ const FRAME: Duration = Duration::from_millis(33);
 /// Time per frame spent applying scanner messages.
 const DRAIN_BUDGET: Duration = Duration::from_millis(20);
 
-pub fn run(root: PathBuf, opts: scan::Options) -> anyhow::Result<()> {
-    let mut app = App::new(root, opts);
+pub fn run(root: PathBuf, opts: scan::Options, live: bool) -> anyhow::Result<()> {
+    let mut app = App::new(root, opts, live);
     let mut terminal = ratatui::init();
     execute!(stdout(), EnableMouseCapture)?;
     let prev_hook = std::panic::take_hook();
@@ -104,8 +104,8 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         Span::raw("  "),
         Span::styled(fmt::size(cwd.disk), Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
     ];
-    if app.cwd != ROOT {
-        let pct = cwd.disk as f64 * 100.0 / tree.get(ROOT).disk.max(1) as f64;
+    if app.cwd != tree.root() {
+        let pct = cwd.disk as f64 * 100.0 / tree.get(tree.root()).disk.max(1) as f64;
         spans.push(Span::styled(format!("  {pct:.1}% of scan root"), theme::dim()));
     }
     spans.push(Span::styled(format!("  {} items", fmt::count(cwd.items as u64)), theme::dim()));
@@ -116,8 +116,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         View::Treemap => "treemap",
         View::List => "list",
     };
-    f.render_widget(Line::from(spans), area);
-    f.render_widget(Line::from(format!("[{view}] ")).right_aligned().style(theme::dim()), area);
+    let tag = format!(" [{view}] ");
+    let [left, right] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(Span::raw(&tag).width() as u16)]).areas(area);
+    f.render_widget(Line::from(spans), left);
+    f.render_widget(Line::from(tag).right_aligned().style(theme::dim()), right);
 }
 
 /// Details of the selected entry, since small tiles can't show their own label.
@@ -149,7 +152,7 @@ fn draw_info(f: &mut Frame, area: Rect, app: &App) {
 fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let tree = &app.tree;
-    let root = tree.get(ROOT);
+    let root = tree.get(tree.root());
     let mut spans = Vec::new();
     if let Some(msg) = app.message() {
         spans.push(Span::styled(format!(" {msg}"), Style::new().fg(theme::ACCENT)));
@@ -162,6 +165,11 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     } else {
         let took = app.last_scan.map(|d| format!(" in {:.2}s", d.as_secs_f64())).unwrap_or_default();
         spans.push(Span::styled(format!(" {} items scanned{took}", fmt::count(root.items as u64)), theme::dim()));
+    }
+    match app.watched {
+        Some((_, true)) => spans.push(Span::styled("  ● live", Style::new().fg(theme::LIVE_FG))),
+        Some((_, false)) => spans.push(Span::styled("  ● live (top level only)", Style::new().fg(theme::LIVE_FG))),
+        None => {}
     }
     if tree.errors > 0 {
         spans.push(Span::styled(format!("  {} unreadable", fmt::count(tree.errors as u64)), Style::new().fg(theme::ERROR_FG)));
@@ -181,12 +189,14 @@ fn draw_help(f: &mut Frame, area: Rect) {
     const KEYS: &[(&str, &str)] = &[
         ("←↓↑→ / hjkl", "move (spatially in the treemap)"),
         ("Enter / click", "open directory"),
-        ("Backspace / u", "go up a directory"),
+        ("Backspace / u", "go up (past the start dir too)"),
         ("right click", "go up a directory"),
         ("Tab", "switch between treemap and list"),
         ("g / G, PgUp/PgDn", "jump in the list"),
         ("r", "rescan the selected directory"),
         ("R", "rescan the current directory"),
+        ("n", "nested treemap: show inside dirs"),
+        ("w", "live updates on/off"),
         ("y", "copy path to clipboard (OSC 52)"),
         ("q / Ctrl-C", "quit"),
     ];

@@ -3,6 +3,7 @@ mod layout;
 mod scan;
 mod tree;
 mod ui;
+mod watch;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -25,6 +26,10 @@ struct Cli {
     #[arg(short = 'x', long)]
     one_file_system: bool,
 
+    /// Don't watch for filesystem changes (toggle with `w` in the UI)
+    #[arg(long)]
+    no_watch: bool,
+
     /// Print a du-style summary of the top level instead of starting the UI
     #[arg(long)]
     print: bool,
@@ -44,7 +49,7 @@ fn main() -> anyhow::Result<()> {
         print_summary(root, opts);
         Ok(())
     } else {
-        ui::run(root, opts)
+        ui::run(root, opts, !cli.no_watch)
     }
 }
 
@@ -52,7 +57,8 @@ fn print_summary(root: PathBuf, opts: scan::Options) {
     let start = Instant::now();
     let mut tree = Tree::new(root.clone());
     let (tx, rx) = crossbeam_channel::unbounded();
-    scan::spawn(root, ROOT, tree.ids.clone(), opts, scan::pool(), tx);
+    let req = scan::Request { path: root, id: ROOT, skip: None, send_root: true };
+    scan::spawn(req, tree.ids.clone(), opts, &scan::pool(), tx);
     for msg in rx {
         let done = matches!(msg, Msg::Done);
         tree.apply(msg);
