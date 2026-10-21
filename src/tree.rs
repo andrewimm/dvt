@@ -40,8 +40,11 @@ pub mod flags {
     pub const DEAD: u8 = 1 << 4;
     /// Matched an exclude pattern: listed, but not read or counted.
     pub const EXCLUDED: u8 = 1 << 5;
+    /// A directory whose contents are only in the cloud (iCloud Drive and
+    /// other File Providers). Not read, since that would download them.
+    pub const CLOUD: u8 = 1 << 6;
     /// Directories with any of these flags are not scanned.
-    pub const NO_DESCEND: u8 = ERROR | OTHER_FS | EXCLUDED;
+    pub const NO_DESCEND: u8 = ERROR | OTHER_FS | EXCLUDED | CLOUD;
 }
 
 /// 32 bytes per entry; names live in a shared byte arena and child lists in a

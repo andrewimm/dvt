@@ -143,6 +143,12 @@ pub fn name_line(tree: &Tree, id: NodeId, mut label: String) -> Line<'static> {
     if n.has(flags::OTHER_FS) {
         spans.push(Span::styled("  (other filesystem, skipped)", theme::dim()));
     }
+    if n.has(flags::CLOUD) {
+        spans.push(Span::styled(
+            "  (in the cloud, not downloaded)",
+            theme::dim(),
+        ));
+    }
     Line::from(spans)
 }
 

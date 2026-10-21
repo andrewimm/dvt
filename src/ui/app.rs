@@ -14,7 +14,7 @@ use rayon::ThreadPool;
 use crate::scan::{self, Msg, Request};
 use crate::search::{self as find, Matcher};
 use crate::tree::{NodeId, ROOT, Tree, flags};
-use crate::watch::Watcher;
+use crate::watch::{self, Change, Watcher};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -97,6 +97,8 @@ pub struct App {
     watcher: Option<Watcher>,
     pub watched: Option<(NodeId, bool)>,
     changed: HashSet<PathBuf>,
+    /// Directories to rescan because events below them were dropped.
+    stale: HashSet<NodeId>,
     last_change: Instant,
     last_refresh: HashMap<NodeId, Instant>,
 
@@ -153,6 +155,7 @@ impl App {
             watcher: if live { Watcher::new() } else { None },
             watched: None,
             changed: HashSet::new(),
+            stale: HashSet::new(),
             last_change: Instant::now(),
             last_refresh: HashMap::new(),
             tiles: Vec::new(),
@@ -352,14 +355,35 @@ impl App {
     fn process_changes(&mut self) {
         let Some(w) = &self.watcher else { return };
         let mut got = false;
-        while let Ok(path) = w.events.try_recv() {
-            self.changed.insert(path);
+        while let Ok(change) = w.events.try_recv() {
+            match change {
+                Change::Path(path) => {
+                    self.changed.insert(path);
+                }
+                Change::Rescan(path) => {
+                    let id = match path {
+                        Some(p) => self.tree.lookup(&p),
+                        None => self.watched.map(|(id, _)| id),
+                    };
+                    self.stale.extend(id);
+                }
+            }
             got = true;
         }
         if got {
             self.last_change = Instant::now();
         }
-        if self.changed.is_empty() || self.last_change.elapsed() < CHANGE_DEBOUNCE {
+        if self.last_change.elapsed() < CHANGE_DEBOUNCE {
+            return;
+        }
+        for id in std::mem::take(&mut self.stale) {
+            let n = self.tree.get(id);
+            // A directory that's still being scanned will be up to date anyway.
+            if self.tree.is_live(id) && n.is_dir() && n.has(flags::SCANNED) {
+                self.rescan(Some(id));
+            }
+        }
+        if self.changed.is_empty() {
             return;
         }
         let mut dirs = HashSet::new();
@@ -410,8 +434,8 @@ impl App {
             (false, Some(_)) => None,
             (true, Some((id, _))) if id == self.cwd && self.scans > 0 => return,
             (true, _) => {
-                let recursive =
-                    self.scans == 0 && self.tree.get(self.cwd).items <= RECURSIVE_WATCH_LIMIT;
+                let recursive = watch::RECURSIVE_IS_FREE
+                    || self.scans == 0 && self.tree.get(self.cwd).items <= RECURSIVE_WATCH_LIMIT;
                 Some((self.cwd, recursive))
             }
         };
@@ -677,6 +701,10 @@ impl App {
                 let from = self.cwd;
                 match self.tree.grow_up() {
                     Some((root, skip)) => {
+                        // As in `main`: a scan of `/` stays on its filesystem.
+                        if self.tree.root_path().parent().is_none() {
+                            self.opts.one_file_system = true;
+                        }
                         self.start_scan(root, Some(skip), true);
                         self.set_cwd(root);
                         self.sel.insert(root, from);
@@ -776,10 +804,18 @@ impl App {
         }
     }
 
-    /// Copies the selected path to the clipboard using the OSC 52 escape,
-    /// which also works over ssh.
+    /// Copies the selected path to the clipboard: with `pbcopy` on a local
+    /// Mac, since Terminal.app ignores OSC 52; otherwise with the OSC 52
+    /// escape, which also works over ssh.
     fn copy_path(&mut self) {
         let path = self.tree.path(self.selected().unwrap_or(self.cwd));
+        if cfg!(target_os = "macos")
+            && std::env::var_os("SSH_TTY").is_none()
+            && pbcopy(path.as_os_str().as_encoded_bytes()).is_ok()
+        {
+            self.say(format!("copied {}", path.display()));
+            return;
+        }
         let seq = format!(
             "\x1b]52;c;{}\x07",
             base64(path.as_os_str().as_encoded_bytes())
@@ -787,6 +823,21 @@ impl App {
         let mut out = std::io::stdout();
         let _ = out.write_all(seq.as_bytes()).and_then(|_| out.flush());
         self.say(format!("copied {}", path.display()));
+    }
+}
+
+fn pbcopy(data: &[u8]) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("pbcopy")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    child.stdin.take().unwrap().write_all(data)?;
+    if child.wait()?.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("pbcopy failed"))
     }
 }
 

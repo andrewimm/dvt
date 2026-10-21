@@ -7,14 +7,14 @@
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 mod platform;
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-#[cfg(not(target_os = "linux"))]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -23,12 +23,28 @@ use crossbeam_channel::Sender;
 use rayon::{Scope, ThreadPool};
 #[cfg(target_os = "linux")]
 use rustix::fd::OwnedFd;
+#[cfg(target_os = "macos")]
+use std::os::fd::OwnedFd;
 /// Elsewhere, directories are always opened by path and nothing is held.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 type OwnedFd = ();
 
 use crate::exclude::Excludes;
 use crate::tree::{Kind, NodeId, flags};
+
+#[cfg(target_os = "macos")]
+pub use macos::{canonicalize, init};
+
+/// An absolute path to `path` with symlinks resolved, spelled the way watch
+/// events will report it.
+#[cfg(not(target_os = "macos"))]
+pub fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+    fs::canonicalize(path)
+}
+
+/// Process-wide settings for scanning, applied once at startup.
+#[cfg(not(target_os = "macos"))]
+pub fn init() {}
 
 pub enum Msg {
     /// The scan root itself: its kind and own size.
@@ -241,7 +257,7 @@ pub fn refresh(path: PathBuf, id: NodeId, opts: Options, pool: &ThreadPool, tx: 
 /// sparing the kernel a walk down the full path for each one. It closes when
 /// the last child that needs it has opened itself.
 pub(super) struct Parent<'c> {
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     fd: OwnedFd,
     ctx: &'c Ctx,
 }
@@ -309,27 +325,47 @@ struct Stat {
     dev: u64,
     ino: u64,
     nlink: u64,
+    /// Whether a directory has another filesystem mounted on it, where the
+    /// reader can tell; `-x` then goes by this rather than by `dev`.
+    mount_point: Option<bool>,
+    /// A directory whose contents are only in the cloud.
+    dataless: bool,
 }
 
 /// Applies the scan rules shared by every reader (`-x` and hardlink dedup)
 /// and returns the entry's kind, counted size and flags.
 fn classify(ctx: &Ctx, st: Stat) -> (Kind, u64, u8) {
     if st.kind == Kind::Dir {
-        if ctx.opts.one_file_system && Some(st.dev) != ctx.root_dev {
-            return (st.kind, st.disk, flags::OTHER_FS);
+        let mut fl = 0;
+        let other_fs = st.mount_point.unwrap_or(Some(st.dev) != ctx.root_dev);
+        if ctx.opts.one_file_system && other_fs {
+            fl |= flags::OTHER_FS;
         }
+        if st.dataless {
+            fl |= flags::CLOUD;
+        }
+        return (st.kind, st.disk, fl);
     } else if st.nlink > 1 && !ctx.seen_links.lock().unwrap().insert((st.dev, st.ino)) {
         return (st.kind, 0, flags::HARDLINK_DUP);
     }
     (st.kind, st.disk, 0)
 }
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+use self::read_dir_std as read_dir;
 #[cfg(target_os = "linux")]
 use linux::read_dir;
+#[cfg(target_os = "macos")]
+use macos::read_dir;
 
-/// The portable reader, on top of `std::fs`.
+/// The portable reader, on top of `std::fs`. macOS falls back to it for
+/// filesystems without `getattrlistbulk`.
 #[cfg(not(target_os = "linux"))]
-fn read_dir(path: &Path, _parent: Option<&Parent>, ctx: &Ctx) -> (Listing, bool, Option<OwnedFd>) {
+fn read_dir_std(
+    path: &Path,
+    _parent: Option<&Parent>,
+    ctx: &Ctx,
+) -> (Listing, bool, Option<OwnedFd>) {
     let mut listing = Listing::default();
     let Ok(rd) = fs::read_dir(path) else {
         return (listing, true, None);
@@ -363,6 +399,8 @@ fn read_dir(path: &Path, _parent: Option<&Parent>, ctx: &Ctx) -> (Listing, bool,
             dev,
             ino,
             nlink,
+            mount_point: None,
+            dataless: false,
         };
         let (kind, disk, fl) = classify(ctx, stat);
         listing.push(&name, kind, disk, fl);

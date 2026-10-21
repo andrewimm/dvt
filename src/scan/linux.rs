@@ -102,6 +102,8 @@ fn read_fd(fd: &OwnedFd, path: &Path, buf: &mut [MaybeUninit<u8>], ctx: &Ctx) ->
             dev: makedev(st.stx_dev_major, st.stx_dev_minor),
             ino: st.stx_ino,
             nlink: st.stx_nlink.into(),
+            mount_point: None,
+            dataless: false,
         };
         let (kind, disk, fl) = classify(ctx, stat);
         listing.push(name, kind, disk, fl);

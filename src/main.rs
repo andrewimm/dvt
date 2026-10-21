@@ -53,7 +53,8 @@ struct Cli {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let root = std::fs::canonicalize(&cli.path)
+    scan::init();
+    let root = scan::canonicalize(&cli.path)
         .with_context(|| format!("cannot open {}", cli.path.display()))?;
     if !root.is_dir() {
         bail!("{} is not a directory", root.display());

@@ -100,6 +100,39 @@ jobs:
           name: arch
           path: packaging/*.pkg.tar.zst
 
+  # One universal binary for Apple Silicon and Intel, built on the oldest
+  # macOS the toolchain supports targeting rather than the runner's own.
+  macos:
+    name: build macOS binary
+    runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - run: packaging/release-check.sh "${{ inputs.tag || github.ref_name }}"
+      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+      # lipo leaves the Intel slice unsigned, and an ad-hoc signature is the
+      # least Apple Silicon will run; this signs both.
+      - run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          dir=dvt-$version-macos
+          mkdir "$dir"
+          lipo -create -output "$dir/dvt" \
+            target/aarch64-apple-darwin/release/dvt \
+            target/x86_64-apple-darwin/release/dvt
+          codesign --force --sign - "$dir/dvt"
+          cp README.md LICENSE "$dir/"
+          tar -czf "$dir.tar.gz" "$dir"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dvt-*-macos.tar.gz
+
   # Installing the package is the only real test of its dependency list, and
   # it has to happen in a clean container: the one that built it has every
   # build tool installed and satisfies everything by accident.
@@ -151,9 +184,28 @@ jobs:
           dvt --print /usr > /dev/null
           test -f /usr/share/licenses/dvt/LICENSE
 
+  # Both slices of the universal binary, each on its own hardware.
+  verify-macos:
+    name: run macOS binary (${{ matrix.os }})
+    needs: macos
+    strategy:
+      matrix:
+        os: [macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos
+      - run: |
+          tar -xzf dvt-*-macos.tar.gz
+          bin=$(echo dvt-*-macos/dvt)
+          codesign --verify --all-architectures "$bin"
+          "$bin" --version
+          "$bin" --print /usr > /dev/null
+
   publish:
     name: attach to the release
-    needs: [verify-deb, verify-rpm, verify-arch]
+    needs: [verify-deb, verify-rpm, verify-arch, verify-macos]
     runs-on: ubuntu-latest
     # Job permissions replace the workflow's, so contents is repeated.
     permissions:
