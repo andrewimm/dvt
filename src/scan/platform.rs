@@ -16,8 +16,9 @@ mod imp {
         Some(m.dev())
     }
 
-    pub fn hardlink_key(m: &Metadata) -> Option<(u64, u64)> {
-        (m.nlink() > 1).then(|| (m.dev(), m.ino()))
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    pub fn identity(m: &Metadata) -> (u64, u64, u64) {
+        (m.dev(), m.ino(), m.nlink())
     }
 }
 
@@ -35,8 +36,9 @@ mod imp {
         None
     }
 
-    pub fn hardlink_key(_: &Metadata) -> Option<(u64, u64)> {
-        None
+    /// No hardlink detection: a link count of 1 means every file counts.
+    pub fn identity(_: &Metadata) -> (u64, u64, u64) {
+        (0, 0, 1)
     }
 }
 
@@ -48,6 +50,9 @@ pub fn device(m: &Metadata) -> Option<u64> {
     imp::device(m)
 }
 
-pub fn hardlink_key(m: &Metadata) -> Option<(u64, u64)> {
-    imp::hardlink_key(m)
+/// (device, inode, link count), for hardlink detection. Linux reads these
+/// with `statx` instead (see `linux.rs`).
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+pub fn identity(m: &Metadata) -> (u64, u64, u64) {
+    imp::identity(m)
 }

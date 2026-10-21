@@ -109,42 +109,36 @@ mod tests {
 
     #[test]
     fn walk_and_parallel_scan_agree() {
-        use crate::scan::{Entry, Msg};
+        use crate::scan::{Listing, Msg};
         use crate::tree::{Kind, ROOT};
-        let e = |name: &str, kind| Entry {
-            name: name.into(),
-            kind,
-            disk: 10,
-            flags: 0,
-        };
         // /r: target/ (holds target/ and x.o), src/ (holds main.rs, target.txt), target.log
         let mut t = Tree::new("/r".into());
         t.apply(Msg::Batch {
             dir: ROOT,
             first: 1,
-            entries: vec![
-                e("target", Kind::Dir),
-                e("src", Kind::Dir),
-                e("target.log", Kind::File),
-            ],
+            listing: Listing::of(&[
+                ("target", Kind::Dir, 10),
+                ("src", Kind::Dir, 10),
+                ("target.log", Kind::File, 10),
+            ]),
             error: false,
         });
         t.apply(Msg::Batch {
             dir: 1,
             first: 4,
-            entries: vec![e("target", Kind::Dir), e("x.o", Kind::File)],
+            listing: Listing::of(&[("target", Kind::Dir, 10), ("x.o", Kind::File, 10)]),
             error: false,
         });
         t.apply(Msg::Batch {
             dir: 2,
             first: 6,
-            entries: vec![e("main.rs", Kind::File), e("target.txt", Kind::File)],
+            listing: Listing::of(&[("main.rs", Kind::File, 10), ("target.txt", Kind::File, 10)]),
             error: false,
         });
         t.apply(Msg::Batch {
             dir: 4,
             first: 8,
-            entries: vec![],
+            listing: Listing::of(&[]),
             error: false,
         });
 

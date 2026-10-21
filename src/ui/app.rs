@@ -72,6 +72,8 @@ pub struct App {
     pub search: Search,
     /// Children of `cwd`, largest first. Refreshed before every frame.
     pub children: Vec<NodeId>,
+    /// The (cwd, tree version) `children` was sorted for.
+    children_key: Option<(NodeId, u64)>,
     /// The selected child, remembered per directory.
     sel: HashMap<NodeId, NodeId>,
     pub show_help: bool,
@@ -134,6 +136,7 @@ impl App {
                 last_run: Instant::now(),
             },
             children: Vec::new(),
+            children_key: None,
             sel: HashMap::new(),
             show_help: false,
             quit: false,
@@ -419,7 +422,13 @@ impl App {
     }
 
     pub fn refresh(&mut self) {
-        self.children = self.tree.sorted_children(self.cwd);
+        // Sorting a huge directory every frame adds up; only redo it when the
+        // tree or the directory changed.
+        let key = (self.cwd, self.tree.version);
+        if self.children_key != Some(key) {
+            self.children = self.tree.sorted_children(self.cwd);
+            self.children_key = Some(key);
+        }
         if self.search.open && self.search.stale && self.search.last_run.elapsed() >= SEARCH_RERUN {
             self.run_search(true);
         }
@@ -631,6 +640,7 @@ impl App {
     fn set_cwd(&mut self, id: NodeId) {
         self.cwd = id;
         self.children = self.tree.sorted_children(id);
+        self.children_key = Some((id, self.tree.version));
         self.list_offset = 0;
     }
 

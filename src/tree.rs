@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::scan::{Entry, Msg};
+use crate::scan::{Listing, Msg};
 
 pub type NodeId = u32;
 
@@ -97,6 +97,8 @@ pub struct Tree {
     /// Shared with scanners, which allocate node ids for the entries they find.
     pub ids: Arc<AtomicU32>,
     pub errors: u32,
+    /// Bumped on every change, so views can tell when to recompute.
+    pub version: u64,
     /// New directories found by live refreshes that still need a full scan.
     pending_scans: Vec<NodeId>,
 }
@@ -117,6 +119,7 @@ impl Tree {
             root_path,
             ids: Arc::new(AtomicU32::new(ROOT + 1)),
             errors: 0,
+            version: 0,
             pending_scans: Vec::new(),
         }
     }
@@ -229,6 +232,7 @@ impl Tree {
     }
 
     pub fn apply(&mut self, msg: Msg) {
+        self.version += 1;
         match msg {
             Msg::Root {
                 id,
@@ -250,35 +254,41 @@ impl Tree {
             Msg::Batch {
                 dir,
                 first,
-                entries,
+                listing,
                 error,
             } => {
                 if !self.is_live(dir) || self.get(dir).has(flags::SCANNED) {
                     return;
                 }
-                let new = self.create_entries(dir, first, entries);
+                let new = self.create_entries(dir, first, &listing);
                 self.finish_dir(dir, new, error);
             }
             Msg::Refresh {
                 dir,
-                entries,
+                listing,
                 error,
-            } => self.apply_refresh(dir, entries, error),
+            } => self.apply_refresh(dir, listing, error),
             Msg::Done => {}
         }
     }
 
-    /// Creates nodes `first..` for `entries` under `dir` and adds their sizes
-    /// to `dir` and its ancestors. Returns the new ids.
-    fn create_entries(&mut self, dir: NodeId, first: NodeId, entries: Vec<Entry>) -> Vec<NodeId> {
-        let count = entries.len() as u32;
+    /// Creates nodes `first..` for the listing under `dir` and adds their
+    /// sizes to `dir` and its ancestors. Returns the new ids.
+    fn create_entries(&mut self, dir: NodeId, first: NodeId, listing: &Listing) -> Vec<NodeId> {
+        let count = listing.len() as u32;
         let needed = (first + count) as usize;
         if self.nodes.len() < needed {
             self.nodes.resize(needed, Node::default());
         }
+        // All the names in one copy; each node then points into it.
+        let base = self.names.len();
+        self.names.extend_from_slice(listing.names());
+        u32::try_from(self.names.len()).expect("name arena exceeded 4 GiB");
         let mut total = 0u64;
-        for (i, e) in entries.into_iter().enumerate() {
-            let (name_off, name_len) = self.push_name(&e.name);
+        for (i, e) in listing.entries.iter().enumerate() {
+            let range = listing.name_range(i);
+            let name_off = (base + range.start) as u32;
+            let name_len = range.len().min(u16::MAX as usize) as u16;
             if e.flags & flags::ERROR != 0 {
                 self.errors += 1;
             }
@@ -318,7 +328,7 @@ impl Tree {
     /// Re-reads one directory in place: keeps the subtrees of entries that are
     /// still there, updates file sizes, drops removed entries, and queues new
     /// directories for scanning.
-    fn apply_refresh(&mut self, dir: NodeId, entries: Vec<Entry>, error: bool) {
+    fn apply_refresh(&mut self, dir: NodeId, listing: Listing, error: bool) {
         if !self.is_live(dir) || !self.get(dir).has(flags::SCANNED) {
             return;
         }
@@ -327,10 +337,11 @@ impl Tree {
             .iter()
             .map(|&c| (self.name(c).to_os_string(), c))
             .collect();
-        let mut kept = Vec::with_capacity(entries.len());
-        let mut fresh = Vec::new();
-        for e in entries {
-            match old.remove(&e.name) {
+        let mut kept = Vec::with_capacity(listing.len());
+        let mut fresh = Listing::default();
+        for (i, e) in listing.entries.iter().enumerate() {
+            let name = listing.name(i);
+            match old.remove(name) {
                 Some(id) if self.get(id).kind == e.kind => {
                     let n = *self.get(id);
                     if !n.is_dir() && !n.has(flags::HARDLINK_DUP) && n.disk != e.disk {
@@ -340,9 +351,9 @@ impl Tree {
                 }
                 Some(id) => {
                     self.kill(id);
-                    fresh.push(e);
+                    fresh.push(name, e.kind, e.disk, e.flags);
                 }
-                None => fresh.push(e),
+                None => fresh.push(name, e.kind, e.disk, e.flags),
             }
         }
         for (_, id) in old {
@@ -353,12 +364,12 @@ impl Tree {
         let mut new_dirs = Vec::new();
         // Known limitation: a new hardlink to a file counted elsewhere is
         // counted again, since refreshes don't share the scan's inode set.
-        for (i, e) in fresh.iter().enumerate() {
+        for (i, e) in fresh.entries.iter().enumerate() {
             if e.kind == Kind::Dir && e.flags & flags::NO_DESCEND == 0 {
                 new_dirs.push(first + i as NodeId);
             }
         }
-        let created = self.create_entries(dir, first, fresh);
+        let created = self.create_entries(dir, first, &fresh);
         kept.extend(created);
         let slot = self.get(dir).dir;
         self.dirs[slot as usize] = kept;
@@ -409,6 +420,7 @@ impl Tree {
 
     /// Forgets everything below `id` so it can be rescanned.
     pub fn reset(&mut self, id: NodeId) {
+        self.version += 1;
         let n = *self.get(id);
         self.add_up(id, -(n.disk as i64), -(n.items as i64));
         if n.has(flags::ERROR) {
@@ -426,6 +438,7 @@ impl Tree {
     /// its only child so far. Returns the new root and the old root's name,
     /// which the scan of the new root must skip.
     pub fn grow_up(&mut self) -> Option<(NodeId, OsString)> {
+        self.version += 1;
         let parent_path = self.root_path.parent()?.to_path_buf();
         let name = self.root_path.file_name()?.to_os_string();
         let old = self.root;
@@ -482,15 +495,6 @@ impl Tree {
 mod tests {
     use super::*;
 
-    fn entry(name: &str, kind: Kind, disk: u64) -> Entry {
-        Entry {
-            name: name.into(),
-            kind,
-            disk,
-            flags: 0,
-        }
-    }
-
     fn sample() -> Tree {
         let mut t = Tree::new("/r/s".into());
         t.ids.store(4, Ordering::Relaxed);
@@ -503,13 +507,13 @@ mod tests {
         t.apply(Msg::Batch {
             dir: ROOT,
             first: 1,
-            entries: vec![entry("a", Kind::Dir, 4), entry("f", Kind::File, 10)],
+            listing: Listing::of(&[("a", Kind::Dir, 4), ("f", Kind::File, 10)]),
             error: false,
         });
         t.apply(Msg::Batch {
             dir: 1,
             first: 3,
-            entries: vec![entry("g", Kind::File, 100)],
+            listing: Listing::of(&[("g", Kind::File, 100)]),
             error: false,
         });
         t
@@ -533,7 +537,7 @@ mod tests {
         t.apply(Msg::Batch {
             dir: 500,
             first: 501,
-            entries: vec![entry("x", Kind::File, 7)],
+            listing: Listing::of(&[("x", Kind::File, 7)]),
             error: false,
         });
         assert_eq!(t.get(ROOT).disk, 118);
@@ -542,7 +546,7 @@ mod tests {
         t.apply(Msg::Batch {
             dir: 1,
             first: 9,
-            entries: vec![entry("dup", Kind::File, 7)],
+            listing: Listing::of(&[("dup", Kind::File, 7)]),
             error: false,
         });
         assert_eq!(t.get(ROOT).disk, 118);
@@ -568,11 +572,11 @@ mod tests {
         // "f" grew, "a" is unchanged (its subtree must survive), "n" is a new dir.
         t.apply(Msg::Refresh {
             dir: ROOT,
-            entries: vec![
-                entry("a", Kind::Dir, 4),
-                entry("f", Kind::File, 30),
-                entry("n", Kind::Dir, 4),
-            ],
+            listing: Listing::of(&[
+                ("a", Kind::Dir, 4),
+                ("f", Kind::File, 30),
+                ("n", Kind::Dir, 4),
+            ]),
             error: false,
         });
         assert_eq!(t.get(ROOT).disk, 4 + 104 + 30 + 4);
@@ -584,7 +588,7 @@ mod tests {
         // "a" removed: its subtree dies and leaves the totals.
         t.apply(Msg::Refresh {
             dir: ROOT,
-            entries: vec![entry("f", Kind::File, 30)],
+            listing: Listing::of(&[("f", Kind::File, 30)]),
             error: false,
         });
         assert_eq!(t.get(ROOT).disk, 34);
@@ -613,7 +617,7 @@ mod tests {
         t.apply(Msg::Batch {
             dir: new,
             first,
-            entries: vec![entry("sib", Kind::File, 8)],
+            listing: Listing::of(&[("sib", Kind::File, 8)]),
             error: false,
         });
         assert_eq!(t.get(new).disk, 130);

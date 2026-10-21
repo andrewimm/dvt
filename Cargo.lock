@@ -451,6 +451,7 @@ dependencies = [
  "notify",
  "ratatui",
  "rayon",
+ "rustix",
 ]
 
 [[package]]

@@ -5,18 +5,27 @@
 //! so the receiver always sees a parent's batch (which creates the child nodes)
 //! before any batch for those children.
 
+#[cfg(target_os = "linux")]
+mod linux;
 mod platform;
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(not(target_os = "linux"))]
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crossbeam_channel::Sender;
 use rayon::{Scope, ThreadPool};
+#[cfg(target_os = "linux")]
+use rustix::fd::OwnedFd;
+/// Elsewhere, directories are always opened by path and nothing is held.
+#[cfg(not(target_os = "linux"))]
+type OwnedFd = ();
 
 use crate::exclude::Excludes;
 use crate::tree::{Kind, NodeId, flags};
@@ -29,28 +38,95 @@ pub enum Msg {
         disk: u64,
         error: bool,
     },
-    /// The entries of directory `dir`, which get ids `first..first + entries.len()`.
+    /// The entries of directory `dir`, which get ids `first..first + listing.len()`.
     Batch {
         dir: NodeId,
         first: NodeId,
-        entries: Vec<Entry>,
+        listing: Listing,
         error: bool,
     },
     /// A fresh listing of an already-scanned directory (see `refresh`).
     Refresh {
         dir: NodeId,
-        entries: Vec<Entry>,
+        listing: Listing,
         error: bool,
     },
     /// A scan started with `spawn` has read every directory under its root.
     Done,
 }
 
+/// One directory's entries. Names are packed into a single buffer, so a
+/// listing costs two allocations however many entries it has.
+#[derive(Default)]
+pub struct Listing {
+    pub entries: Vec<Entry>,
+    names: Vec<u8>,
+}
+
 pub struct Entry {
-    pub name: OsString,
+    /// Where this entry's name ends in `Listing::names`; it starts where the
+    /// previous one ends.
+    name_end: u32,
     pub kind: Kind,
     pub disk: u64,
     pub flags: u8,
+}
+
+impl Listing {
+    pub fn push(&mut self, name: &OsStr, kind: Kind, disk: u64, flags: u8) {
+        self.names.extend_from_slice(name.as_encoded_bytes());
+        self.entries.push(Entry {
+            name_end: self.names.len() as u32,
+            kind,
+            disk,
+            flags,
+        });
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Where entry `i`'s name lies in `names()`.
+    pub fn name_range(&self, i: usize) -> std::ops::Range<usize> {
+        let start = if i == 0 {
+            0
+        } else {
+            self.entries[i - 1].name_end as usize
+        };
+        start..self.entries[i].name_end as usize
+    }
+
+    pub fn name(&self, i: usize) -> &OsStr {
+        // SAFETY: the bytes came from `OsStr::as_encoded_bytes` in `push`.
+        unsafe { OsStr::from_encoded_bytes_unchecked(&self.names[self.name_range(i)]) }
+    }
+
+    /// Every name, back to back, in entry order.
+    pub fn names(&self) -> &[u8] {
+        &self.names
+    }
+
+    /// A listing of `(name, kind, size)` entries, for tests.
+    #[cfg(test)]
+    pub fn of(items: &[(&str, Kind, u64)]) -> Listing {
+        let mut l = Listing::default();
+        for &(name, kind, disk) in items {
+            l.push(OsStr::new(name), kind, disk, 0);
+        }
+        l
+    }
+
+    /// The listing without the entry called `name`.
+    fn without(self, name: &OsStr) -> Listing {
+        let mut out = Listing::default();
+        for (i, e) in self.entries.iter().enumerate() {
+            if self.name(i) != name {
+                out.push(self.name(i), e.kind, e.disk, e.flags);
+            }
+        }
+        out
+    }
 }
 
 #[derive(Clone, Default)]
@@ -93,7 +169,13 @@ struct Ctx {
     root_dev: Option<u64>,
     /// (dev, ino) of multiply-linked files already counted.
     seen_links: Mutex<HashSet<(u64, u64)>>,
+    /// Directory descriptors currently held open for children to open
+    /// themselves relative to (see `Parent`).
+    held_fds: AtomicUsize,
 }
+
+/// Most systems allow at least 1024 open files per process.
+const MAX_HELD_FDS: usize = 512;
 
 /// Scans `req.path` recursively into node `req.id` on the pool, then sends
 /// `Msg::Done`.
@@ -123,8 +205,9 @@ pub fn spawn(req: Request, ids: Arc<AtomicU32>, opts: Options, pool: &ThreadPool
                 opts,
                 root_dev,
                 seen_links: Mutex::new(HashSet::new()),
+                held_fds: AtomicUsize::new(0),
             };
-            rayon::scope(|s| walk(s, req.path, req.id, req.skip.as_deref(), &ctx));
+            rayon::scope(|s| walk(s, req.path, None, req.id, req.skip.as_deref(), &ctx));
         }
         let _ = tx.send(Msg::Done);
     });
@@ -143,103 +226,148 @@ pub fn refresh(path: PathBuf, id: NodeId, opts: Options, pool: &ThreadPool, tx: 
             opts,
             root_dev,
             seen_links: Mutex::default(),
+            held_fds: AtomicUsize::new(0),
         };
-        let (entries, error) = read_dir(&path, &ctx);
+        let (listing, error, _) = read_dir(&path, None, &ctx);
         let _ = ctx.tx.send(Msg::Refresh {
             dir: id,
-            entries,
+            listing,
             error,
         });
     });
 }
 
-fn walk<'s>(s: &Scope<'s>, path: PathBuf, id: NodeId, skip: Option<&OsStr>, ctx: &'s Ctx) {
-    let (mut entries, error) = read_dir(&path, ctx);
-    if let Some(skip) = skip {
-        entries.retain(|e| e.name != skip);
-    }
-    let first = ctx.ids.fetch_add(entries.len() as u32, Ordering::Relaxed);
-    let subdirs: Vec<(PathBuf, NodeId)> = entries
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| e.kind == Kind::Dir && e.flags & flags::NO_DESCEND == 0)
-        .map(|(i, e)| (path.join(&e.name), first + i as NodeId))
-        .collect();
-    if ctx
-        .tx
-        .send(Msg::Batch {
-            dir: id,
-            first,
-            entries,
-            error,
-        })
-        .is_err()
-    {
-        return; // receiver gone, the app is quitting
-    }
-    for (child, child_id) in subdirs {
-        s.spawn(move |s| walk(s, child, child_id, None, ctx));
+/// A directory kept open so its subdirectories can be opened relative to it,
+/// sparing the kernel a walk down the full path for each one. It closes when
+/// the last child that needs it has opened itself.
+pub(super) struct Parent<'c> {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fd: OwnedFd,
+    ctx: &'c Ctx,
+}
+
+impl Drop for Parent<'_> {
+    fn drop(&mut self) {
+        self.ctx.held_fds.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
-fn read_dir(path: &Path, ctx: &Ctx) -> (Vec<Entry>, bool) {
+fn walk<'s>(
+    s: &Scope<'s>,
+    path: PathBuf,
+    parent: Option<Arc<Parent<'s>>>,
+    id: NodeId,
+    skip: Option<&OsStr>,
+    ctx: &'s Ctx,
+) {
+    let (mut listing, error, fd) = read_dir(&path, parent.as_deref(), ctx);
+    drop(parent);
+    if let Some(skip) = skip {
+        listing = listing.without(skip);
+    }
+    let first = ctx.ids.fetch_add(listing.len() as u32, Ordering::Relaxed);
+    let subdirs: Vec<(PathBuf, NodeId)> = listing
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.kind == Kind::Dir && e.flags & flags::NO_DESCEND == 0)
+        .map(|(i, _)| (path.join(listing.name(i)), first + i as NodeId))
+        .collect();
+    let batch = Msg::Batch {
+        dir: id,
+        first,
+        listing,
+        error,
+    };
+    if ctx.tx.send(batch).is_err() {
+        return; // receiver gone, the app is quitting
+    }
+    // Hold this directory open for its children, within the budget.
+    let held = match fd {
+        Some(fd)
+            if !subdirs.is_empty()
+                && ctx.held_fds.fetch_add(1, Ordering::Relaxed) < MAX_HELD_FDS =>
+        {
+            Some(Arc::new(Parent { fd, ctx }))
+        }
+        Some(_) if !subdirs.is_empty() => {
+            ctx.held_fds.fetch_sub(1, Ordering::Relaxed);
+            None
+        }
+        _ => None,
+    };
+    for (child, child_id) in subdirs {
+        let held = held.clone();
+        s.spawn(move |s| walk(s, child, held, child_id, None, ctx));
+    }
+}
+
+/// What the readers learn about an entry from `stat`.
+struct Stat {
+    kind: Kind,
+    disk: u64,
+    dev: u64,
+    ino: u64,
+    nlink: u64,
+}
+
+/// Applies the scan rules shared by every reader (`-x` and hardlink dedup)
+/// and returns the entry's kind, counted size and flags.
+fn classify(ctx: &Ctx, st: Stat) -> (Kind, u64, u8) {
+    if st.kind == Kind::Dir {
+        if ctx.opts.one_file_system && Some(st.dev) != ctx.root_dev {
+            return (st.kind, st.disk, flags::OTHER_FS);
+        }
+    } else if st.nlink > 1 && !ctx.seen_links.lock().unwrap().insert((st.dev, st.ino)) {
+        return (st.kind, 0, flags::HARDLINK_DUP);
+    }
+    (st.kind, st.disk, 0)
+}
+
+#[cfg(target_os = "linux")]
+use linux::read_dir;
+
+/// The portable reader, on top of `std::fs`.
+#[cfg(not(target_os = "linux"))]
+fn read_dir(path: &Path, _parent: Option<&Parent>, ctx: &Ctx) -> (Listing, bool, Option<OwnedFd>) {
+    let mut listing = Listing::default();
     let Ok(rd) = fs::read_dir(path) else {
-        return (Vec::new(), true);
+        return (listing, true, None);
     };
     let mut error = false;
-    let mut entries = Vec::new();
     for de in rd {
         let Ok(de) = de else {
             error = true;
             continue;
         };
         let name = de.file_name();
-        // Checked before stat-ing: the file type usually comes free with the
-        // directory listing, and an excluded entry needs nothing more.
+        // The file type usually comes free with the listing; an excluded
+        // entry needs nothing more.
         if !ctx.opts.excludes.is_empty() {
             let is_dir = de.file_type().is_ok_and(|t| t.is_dir());
             if ctx.opts.excludes.matches(path, &name, is_dir) {
                 let kind = if is_dir { Kind::Dir } else { Kind::File };
-                entries.push(Entry {
-                    name,
-                    kind,
-                    disk: 0,
-                    flags: flags::EXCLUDED,
-                });
+                listing.push(&name, kind, 0, flags::EXCLUDED);
                 continue;
             }
         }
-        // `DirEntry::metadata` does not follow symlinks (fstatat on unix).
+        // `DirEntry::metadata` does not follow symlinks.
         let Ok(meta) = de.metadata() else {
-            entries.push(Entry {
-                name,
-                kind: Kind::Other,
-                disk: 0,
-                flags: flags::ERROR,
-            });
+            listing.push(&name, Kind::Other, 0, flags::ERROR);
             continue;
         };
-        let kind = kind_of(meta.file_type());
-        let mut disk = platform::disk_usage(&meta);
-        let mut fl = 0;
-        if kind == Kind::Dir {
-            if ctx.opts.one_file_system && platform::device(&meta) != ctx.root_dev {
-                fl |= flags::OTHER_FS;
-            }
-        } else if let Some(key) = platform::hardlink_key(&meta)
-            && !ctx.seen_links.lock().unwrap().insert(key)
-        {
-            disk = 0;
-            fl |= flags::HARDLINK_DUP;
-        }
-        entries.push(Entry {
-            name,
-            kind,
-            disk,
-            flags: fl,
-        });
+        let (dev, ino, nlink) = platform::identity(&meta);
+        let stat = Stat {
+            kind: kind_of(meta.file_type()),
+            disk: platform::disk_usage(&meta),
+            dev,
+            ino,
+            nlink,
+        };
+        let (kind, disk, fl) = classify(ctx, stat);
+        listing.push(&name, kind, disk, fl);
     }
-    (entries, error)
+    (listing, error, None)
 }
 
 fn kind_of(ft: fs::FileType) -> Kind {
