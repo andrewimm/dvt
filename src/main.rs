@@ -39,7 +39,8 @@ struct Cli {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let root = std::fs::canonicalize(&cli.path).with_context(|| format!("cannot open {}", cli.path.display()))?;
+    let root = std::fs::canonicalize(&cli.path)
+        .with_context(|| format!("cannot open {}", cli.path.display()))?;
     if !root.is_dir() {
         bail!("{} is not a directory", root.display());
     }
@@ -59,7 +60,12 @@ fn print_summary(root: PathBuf, opts: scan::Options) {
     let start = Instant::now();
     let mut tree = Tree::new(root.clone());
     let (tx, rx) = crossbeam_channel::unbounded();
-    let req = scan::Request { path: root, id: ROOT, skip: None, send_root: true };
+    let req = scan::Request {
+        path: root,
+        id: ROOT,
+        skip: None,
+        send_root: true,
+    };
     scan::spawn(req, tree.ids.clone(), opts, &scan::pool(), tx);
     for msg in rx {
         let done = matches!(msg, Msg::Done);
@@ -72,10 +78,19 @@ fn print_summary(root: PathBuf, opts: scan::Options) {
     for id in tree.sorted_children(ROOT) {
         let n = tree.get(id);
         let slash = if n.is_dir() { "/" } else { "" };
-        println!("{:>8}  {}{slash}", fmt::size(n.disk), tree.name(id).to_string_lossy());
+        println!(
+            "{:>8}  {}{slash}",
+            fmt::size(n.disk),
+            tree.name(id).to_string_lossy()
+        );
     }
     let r = tree.get(ROOT);
-    println!("{:>8}  {} ({} bytes)", fmt::size(r.disk), tree.root_path().display(), r.disk);
+    println!(
+        "{:>8}  {} ({} bytes)",
+        fmt::size(r.disk),
+        tree.root_path().display(),
+        r.disk
+    );
     eprintln!(
         "{} items in {:.2?}, {} errors",
         fmt::count(r.items as u64),

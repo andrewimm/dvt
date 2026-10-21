@@ -30,7 +30,9 @@ impl Watcher {
                     EventKind::Any
                         | EventKind::Create(_)
                         | EventKind::Remove(_)
-                        | EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_) | ModifyKind::Name(_))
+                        | EventKind::Modify(
+                            ModifyKind::Any | ModifyKind::Data(_) | ModifyKind::Name(_)
+                        )
                 );
                 if relevant {
                     for p in ev.paths {
@@ -56,7 +58,11 @@ impl Watcher {
                         let _ = watcher.unwatch(&old);
                     }
                     if let Some((path, recursive)) = cmd {
-                        let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+                        let mode = if recursive {
+                            RecursiveMode::Recursive
+                        } else {
+                            RecursiveMode::NonRecursive
+                        };
                         if watcher.watch(&path, mode).is_ok() {
                             current = Some(path);
                         }

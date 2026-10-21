@@ -137,7 +137,9 @@ impl Tree {
     /// Ids past the end of the arena belong to batches that were dropped as
     /// stale, so they count as dead too.
     pub fn is_live(&self, id: NodeId) -> bool {
-        self.nodes.get(id as usize).is_some_and(|n| !n.has(flags::DEAD))
+        self.nodes
+            .get(id as usize)
+            .is_some_and(|n| !n.has(flags::DEAD))
     }
 
     pub fn parent(&self, id: NodeId) -> Option<NodeId> {
@@ -171,7 +173,10 @@ impl Tree {
     }
 
     fn cmp_size(&self, a: NodeId, b: NodeId) -> std::cmp::Ordering {
-        self.get(b).disk.cmp(&self.get(a).disk).then_with(|| self.name(a).cmp(self.name(b)))
+        self.get(b)
+            .disk
+            .cmp(&self.get(a).disk)
+            .then_with(|| self.name(a).cmp(self.name(b)))
     }
 
     pub fn name(&self, id: NodeId) -> &OsStr {
@@ -203,7 +208,11 @@ impl Tree {
         let rest = path.strip_prefix(&self.root_path).ok()?;
         let mut cur = self.root;
         for part in rest.components() {
-            match self.children(cur).iter().find(|&&c| self.name(c) == part.as_os_str()) {
+            match self
+                .children(cur)
+                .iter()
+                .find(|&&c| self.name(c) == part.as_os_str())
+            {
                 Some(&c) if self.is_live(c) => cur = c,
                 _ => break,
             }
@@ -217,7 +226,12 @@ impl Tree {
 
     pub fn apply(&mut self, msg: Msg) {
         match msg {
-            Msg::Root { id, kind, disk, error } => {
+            Msg::Root {
+                id,
+                kind,
+                disk,
+                error,
+            } => {
                 if !self.is_live(id) {
                     return;
                 }
@@ -229,14 +243,23 @@ impl Tree {
                 }
                 self.add_up(id, disk as i64, 0);
             }
-            Msg::Batch { dir, first, entries, error } => {
+            Msg::Batch {
+                dir,
+                first,
+                entries,
+                error,
+            } => {
                 if !self.is_live(dir) || self.get(dir).has(flags::SCANNED) {
                     return;
                 }
                 let new = self.create_entries(dir, first, entries);
                 self.finish_dir(dir, new, error);
             }
-            Msg::Refresh { dir, entries, error } => self.apply_refresh(dir, entries, error),
+            Msg::Refresh {
+                dir,
+                entries,
+                error,
+            } => self.apply_refresh(dir, entries, error),
             Msg::Done => {}
         }
     }
@@ -295,8 +318,11 @@ impl Tree {
         if !self.is_live(dir) || !self.get(dir).has(flags::SCANNED) {
             return;
         }
-        let mut old: HashMap<OsString, NodeId> =
-            self.children(dir).iter().map(|&c| (self.name(c).to_os_string(), c)).collect();
+        let mut old: HashMap<OsString, NodeId> = self
+            .children(dir)
+            .iter()
+            .map(|&c| (self.name(c).to_os_string(), c))
+            .collect();
         let mut kept = Vec::with_capacity(entries.len());
         let mut fresh = Vec::new();
         for e in entries {
@@ -441,7 +467,10 @@ impl Tree {
         let off = self.names.len();
         let len = bytes.len().min(u16::MAX as usize);
         self.names.extend_from_slice(&bytes[..len]);
-        (u32::try_from(off).expect("name arena exceeded 4 GiB"), len as u16)
+        (
+            u32::try_from(off).expect("name arena exceeded 4 GiB"),
+            len as u16,
+        )
     }
 }
 
@@ -450,20 +479,35 @@ mod tests {
     use super::*;
 
     fn entry(name: &str, kind: Kind, disk: u64) -> Entry {
-        Entry { name: name.into(), kind, disk, flags: 0 }
+        Entry {
+            name: name.into(),
+            kind,
+            disk,
+            flags: 0,
+        }
     }
 
     fn sample() -> Tree {
         let mut t = Tree::new("/r/s".into());
         t.ids.store(4, Ordering::Relaxed);
-        t.apply(Msg::Root { id: ROOT, kind: Kind::Dir, disk: 4, error: false });
+        t.apply(Msg::Root {
+            id: ROOT,
+            kind: Kind::Dir,
+            disk: 4,
+            error: false,
+        });
         t.apply(Msg::Batch {
             dir: ROOT,
             first: 1,
             entries: vec![entry("a", Kind::Dir, 4), entry("f", Kind::File, 10)],
             error: false,
         });
-        t.apply(Msg::Batch { dir: 1, first: 3, entries: vec![entry("g", Kind::File, 100)], error: false });
+        t.apply(Msg::Batch {
+            dir: 1,
+            first: 3,
+            entries: vec![entry("g", Kind::File, 100)],
+            error: false,
+        });
         t
     }
 
@@ -482,11 +526,21 @@ mod tests {
 
         // A batch for a dir that was never created (its parent's batch was
         // dropped) is ignored.
-        t.apply(Msg::Batch { dir: 500, first: 501, entries: vec![entry("x", Kind::File, 7)], error: false });
+        t.apply(Msg::Batch {
+            dir: 500,
+            first: 501,
+            entries: vec![entry("x", Kind::File, 7)],
+            error: false,
+        });
         assert_eq!(t.get(ROOT).disk, 118);
 
         // A duplicate batch for an already-scanned dir is ignored.
-        t.apply(Msg::Batch { dir: 1, first: 9, entries: vec![entry("dup", Kind::File, 7)], error: false });
+        t.apply(Msg::Batch {
+            dir: 1,
+            first: 9,
+            entries: vec![entry("dup", Kind::File, 7)],
+            error: false,
+        });
         assert_eq!(t.get(ROOT).disk, 118);
 
         t.reset(1);
@@ -495,7 +549,12 @@ mod tests {
         assert!(t.children(1).is_empty());
         assert!(!t.is_live(3));
         // Stale messages for the dead subtree are dropped.
-        t.apply(Msg::Root { id: 3, kind: Kind::File, disk: 50, error: false });
+        t.apply(Msg::Root {
+            id: 3,
+            kind: Kind::File,
+            disk: 50,
+            error: false,
+        });
         assert_eq!(t.get(ROOT).disk, 14);
     }
 
@@ -505,7 +564,11 @@ mod tests {
         // "f" grew, "a" is unchanged (its subtree must survive), "n" is a new dir.
         t.apply(Msg::Refresh {
             dir: ROOT,
-            entries: vec![entry("a", Kind::Dir, 4), entry("f", Kind::File, 30), entry("n", Kind::Dir, 4)],
+            entries: vec![
+                entry("a", Kind::Dir, 4),
+                entry("f", Kind::File, 30),
+                entry("n", Kind::Dir, 4),
+            ],
             error: false,
         });
         assert_eq!(t.get(ROOT).disk, 4 + 104 + 30 + 4);
@@ -515,7 +578,11 @@ mod tests {
         assert_eq!(t.take_pending_scans(), vec![n]);
 
         // "a" removed: its subtree dies and leaves the totals.
-        t.apply(Msg::Refresh { dir: ROOT, entries: vec![entry("f", Kind::File, 30)], error: false });
+        t.apply(Msg::Refresh {
+            dir: ROOT,
+            entries: vec![entry("f", Kind::File, 30)],
+            error: false,
+        });
         assert_eq!(t.get(ROOT).disk, 34);
         assert_eq!(t.get(ROOT).items, 1);
         assert!(!t.is_live(1) && !t.is_live(3));
@@ -532,9 +599,19 @@ mod tests {
         assert_eq!(t.get(new).items, 4);
 
         // The parent's scan reports its own size and siblings, skipping "s".
-        t.apply(Msg::Root { id: new, kind: Kind::Dir, disk: 4, error: false });
+        t.apply(Msg::Root {
+            id: new,
+            kind: Kind::Dir,
+            disk: 4,
+            error: false,
+        });
         let first = t.ids.fetch_add(1, Ordering::Relaxed);
-        t.apply(Msg::Batch { dir: new, first, entries: vec![entry("sib", Kind::File, 8)], error: false });
+        t.apply(Msg::Batch {
+            dir: new,
+            first,
+            entries: vec![entry("sib", Kind::File, 8)],
+            error: false,
+        });
         assert_eq!(t.get(new).disk, 130);
         assert_eq!(t.children(new).len(), 2);
     }

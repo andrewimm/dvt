@@ -22,11 +22,25 @@ use crate::tree::{Kind, NodeId, flags};
 
 pub enum Msg {
     /// The scan root itself: its kind and own size.
-    Root { id: NodeId, kind: Kind, disk: u64, error: bool },
+    Root {
+        id: NodeId,
+        kind: Kind,
+        disk: u64,
+        error: bool,
+    },
     /// The entries of directory `dir`, which get ids `first..first + entries.len()`.
-    Batch { dir: NodeId, first: NodeId, entries: Vec<Entry>, error: bool },
+    Batch {
+        dir: NodeId,
+        first: NodeId,
+        entries: Vec<Entry>,
+        error: bool,
+    },
     /// A fresh listing of an already-scanned directory (see `refresh`).
-    Refresh { dir: NodeId, entries: Vec<Entry>, error: bool },
+    Refresh {
+        dir: NodeId,
+        entries: Vec<Entry>,
+        error: bool,
+    },
     /// A scan started with `spawn` has read every directory under its root.
     Done,
 }
@@ -57,7 +71,9 @@ pub struct Request {
 
 pub fn pool() -> Arc<ThreadPool> {
     // Scanning is mostly waiting on stat calls, so oversubscribe the cores.
-    let threads = thread::available_parallelism().map_or(4, |n| n.get() * 2).clamp(4, 64);
+    let threads = thread::available_parallelism()
+        .map_or(4, |n| n.get() * 2)
+        .clamp(4, 64);
     Arc::new(
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -82,14 +98,29 @@ pub fn spawn(req: Request, ids: Arc<AtomicU32>, opts: Options, pool: &ThreadPool
     pool.spawn(move || {
         let meta = fs::symlink_metadata(&req.path);
         let (kind, disk, root_dev) = match &meta {
-            Ok(m) => (kind_of(m.file_type()), platform::disk_usage(m), platform::device(m)),
+            Ok(m) => (
+                kind_of(m.file_type()),
+                platform::disk_usage(m),
+                platform::device(m),
+            ),
             Err(_) => (Kind::Other, 0, None),
         };
         if req.send_root {
-            let _ = tx.send(Msg::Root { id: req.id, kind, disk, error: meta.is_err() });
+            let _ = tx.send(Msg::Root {
+                id: req.id,
+                kind,
+                disk,
+                error: meta.is_err(),
+            });
         }
         if kind == Kind::Dir {
-            let ctx = Ctx { tx: tx.clone(), ids, opts, root_dev, seen_links: Mutex::new(HashSet::new()) };
+            let ctx = Ctx {
+                tx: tx.clone(),
+                ids,
+                opts,
+                root_dev,
+                seen_links: Mutex::new(HashSet::new()),
+            };
             rayon::scope(|s| walk(s, req.path, req.id, req.skip.as_deref(), &ctx));
         }
         let _ = tx.send(Msg::Done);
@@ -100,10 +131,22 @@ pub fn spawn(req: Request, ids: Arc<AtomicU32>, opts: Options, pool: &ThreadPool
 /// sends the listing as `Msg::Refresh`.
 pub fn refresh(path: PathBuf, id: NodeId, opts: Options, pool: &ThreadPool, tx: Sender<Msg>) {
     pool.spawn(move || {
-        let root_dev = fs::symlink_metadata(&path).ok().and_then(|m| platform::device(&m));
-        let ctx = Ctx { tx, ids: Arc::default(), opts, root_dev, seen_links: Mutex::default() };
+        let root_dev = fs::symlink_metadata(&path)
+            .ok()
+            .and_then(|m| platform::device(&m));
+        let ctx = Ctx {
+            tx,
+            ids: Arc::default(),
+            opts,
+            root_dev,
+            seen_links: Mutex::default(),
+        };
         let (entries, error) = read_dir(&path, &ctx);
-        let _ = ctx.tx.send(Msg::Refresh { dir: id, entries, error });
+        let _ = ctx.tx.send(Msg::Refresh {
+            dir: id,
+            entries,
+            error,
+        });
     });
 }
 
@@ -119,7 +162,16 @@ fn walk<'s>(s: &Scope<'s>, path: PathBuf, id: NodeId, skip: Option<&OsStr>, ctx:
         .filter(|(_, e)| e.kind == Kind::Dir && e.flags & (flags::ERROR | flags::OTHER_FS) == 0)
         .map(|(i, e)| (path.join(&e.name), first + i as NodeId))
         .collect();
-    if ctx.tx.send(Msg::Batch { dir: id, first, entries, error }).is_err() {
+    if ctx
+        .tx
+        .send(Msg::Batch {
+            dir: id,
+            first,
+            entries,
+            error,
+        })
+        .is_err()
+    {
         return; // receiver gone, the app is quitting
     }
     for (child, child_id) in subdirs {
@@ -141,7 +193,12 @@ fn read_dir(path: &Path, ctx: &Ctx) -> (Vec<Entry>, bool) {
         let name = de.file_name();
         // `DirEntry::metadata` does not follow symlinks (fstatat on unix).
         let Ok(meta) = de.metadata() else {
-            entries.push(Entry { name, kind: Kind::Other, disk: 0, flags: flags::ERROR });
+            entries.push(Entry {
+                name,
+                kind: Kind::Other,
+                disk: 0,
+                flags: flags::ERROR,
+            });
             continue;
         };
         let kind = kind_of(meta.file_type());
@@ -152,11 +209,17 @@ fn read_dir(path: &Path, ctx: &Ctx) -> (Vec<Entry>, bool) {
                 fl |= flags::OTHER_FS;
             }
         } else if let Some(key) = platform::hardlink_key(&meta)
-            && !ctx.seen_links.lock().unwrap().insert(key) {
-                disk = 0;
-                fl |= flags::HARDLINK_DUP;
-            }
-        entries.push(Entry { name, kind, disk, flags: fl });
+            && !ctx.seen_links.lock().unwrap().insert(key)
+        {
+            disk = 0;
+            fl |= flags::HARDLINK_DUP;
+        }
+        entries.push(Entry {
+            name,
+            kind,
+            disk,
+            flags: fl,
+        });
     }
     (entries, error)
 }

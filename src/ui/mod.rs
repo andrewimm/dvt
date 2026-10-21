@@ -57,7 +57,11 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<(
             last_draw = Instant::now();
             dirty = false;
         }
-        let timeout = if scanning { Duration::from_millis(15) } else { Duration::from_millis(500) };
+        let timeout = if scanning {
+            Duration::from_millis(15)
+        } else {
+            Duration::from_millis(500)
+        };
         if event::poll(timeout)? {
             loop {
                 dirty |= app.handle(event::read()?);
@@ -81,9 +85,13 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<(
 }
 
 fn draw(f: &mut Frame, app: &mut App) {
-    let [header, body, info, status] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1), Constraint::Length(1)])
-            .areas(f.area());
+    let [header, body, info, status] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(f.area());
     draw_header(f, header, app);
     match app.view {
         _ if app.search.open => search_view::render(f, body, app),
@@ -101,27 +109,51 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let tree = &app.tree;
     let cwd = tree.get(app.cwd);
     let mut spans = vec![
-        Span::styled(" dvt ", Style::new().bg(theme::ACCENT).fg(Color::Black).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " dvt ",
+            Style::new()
+                .bg(theme::ACCENT)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" "),
-        Span::styled(tilde(&tree.path(app.cwd)), Style::new().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            tilde(&tree.path(app.cwd)),
+            Style::new().add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  "),
-        Span::styled(fmt::size(cwd.disk), Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            fmt::size(cwd.disk),
+            Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+        ),
     ];
     if app.cwd != tree.root() {
         let pct = cwd.disk as f64 * 100.0 / tree.get(tree.root()).disk.max(1) as f64;
-        spans.push(Span::styled(format!("  {pct:.1}% of scan root"), theme::dim()));
+        spans.push(Span::styled(
+            format!("  {pct:.1}% of scan root"),
+            theme::dim(),
+        ));
     }
-    spans.push(Span::styled(format!("  {} items", fmt::count(cwd.items as u64)), theme::dim()));
+    spans.push(Span::styled(
+        format!("  {} items", fmt::count(cwd.items as u64)),
+        theme::dim(),
+    ));
     if cwd.has(flags::ERROR) {
-        spans.push(Span::styled("  ! could not read this directory", Style::new().fg(theme::ERROR_FG)));
+        spans.push(Span::styled(
+            "  ! could not read this directory",
+            Style::new().fg(theme::ERROR_FG),
+        ));
     }
     let view = match app.view {
         View::Treemap => "treemap",
         View::List => "list",
     };
     let tag = format!(" [{view}] ");
-    let [left, right] =
-        Layout::horizontal([Constraint::Min(0), Constraint::Length(Span::raw(&tag).width() as u16)]).areas(area);
+    let [left, right] = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(Span::raw(&tag).width() as u16),
+    ])
+    .areas(area);
     f.render_widget(Line::from(spans), left);
     f.render_widget(Line::from(tag).right_aligned().style(theme::dim()), right);
 }
@@ -134,7 +166,10 @@ fn draw_info(f: &mut Frame, area: Rect, app: &App) {
             f.render_widget(
                 Line::from(vec![
                     Span::styled(" ▸ ", Style::new().fg(theme::ACCENT)),
-                    Span::styled(tilde(&app.tree.path(id)), Style::new().add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        tilde(&app.tree.path(id)),
+                        Style::new().add_modifier(Modifier::BOLD),
+                    ),
                     Span::raw(format!("  {}", fmt::size(n.disk))),
                 ]),
                 area,
@@ -159,13 +194,23 @@ fn draw_info(f: &mut Frame, area: Rect, app: &App) {
     let mut spans = vec![
         Span::styled(" ▸ ", Style::new().fg(theme::ACCENT)),
         Span::styled(name, Style::new().add_modifier(Modifier::BOLD)),
-        Span::raw(format!("  {}  {:.1}%", fmt::size(n.disk), n.disk as f64 * 100.0 / total as f64)),
+        Span::raw(format!(
+            "  {}  {:.1}%",
+            fmt::size(n.disk),
+            n.disk as f64 * 100.0 / total as f64
+        )),
     ];
     if n.is_dir() {
-        spans.push(Span::styled(format!("  {} items", fmt::count(n.items as u64)), theme::dim()));
+        spans.push(Span::styled(
+            format!("  {} items", fmt::count(n.items as u64)),
+            theme::dim(),
+        ));
     }
     if let Some(i) = app.selected_index() {
-        spans.push(Span::styled(format!("  #{} of {}", i + 1, app.children.len()), theme::dim()));
+        spans.push(Span::styled(
+            format!("  #{} of {}", i + 1, app.children.len()),
+            theme::dim(),
+        ));
     }
     let line = Line::from(spans);
     if app.view == View::Treemap && line.width() + legend.width() + 2 > area.width as usize {
@@ -192,7 +237,10 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     if app.search.open {
         let s = &app.search;
         let mut spans = vec![
-            Span::styled(" / ", Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " / ",
+                Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(s.query.clone()),
             Span::styled("▏", Style::new().fg(theme::ACCENT)),
         ];
@@ -214,24 +262,44 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
     }
     let mut spans = Vec::new();
     if let Some(msg) = app.message() {
-        spans.push(Span::styled(format!(" {msg}"), Style::new().fg(theme::ACCENT)));
+        spans.push(Span::styled(
+            format!(" {msg}"),
+            Style::new().fg(theme::ACCENT),
+        ));
     } else if let Some(t) = app.scan_elapsed() {
         let frame = SPINNER[(t.as_millis() / 80) as usize % SPINNER.len()];
         spans.push(Span::styled(
-            format!(" {frame} scanning  {} items  {}  {:.1}s", fmt::count(root.items as u64), fmt::size(root.disk), t.as_secs_f64()),
+            format!(
+                " {frame} scanning  {} items  {}  {:.1}s",
+                fmt::count(root.items as u64),
+                fmt::size(root.disk),
+                t.as_secs_f64()
+            ),
             Style::new().fg(theme::ACCENT),
         ));
     } else {
-        let took = app.last_scan.map(|d| format!(" in {:.2}s", d.as_secs_f64())).unwrap_or_default();
-        spans.push(Span::styled(format!(" {} items scanned{took}", fmt::count(root.items as u64)), theme::dim()));
+        let took = app
+            .last_scan
+            .map(|d| format!(" in {:.2}s", d.as_secs_f64()))
+            .unwrap_or_default();
+        spans.push(Span::styled(
+            format!(" {} items scanned{took}", fmt::count(root.items as u64)),
+            theme::dim(),
+        ));
     }
     match app.watched {
         Some((_, true)) => spans.push(Span::styled("  ● live", Style::new().fg(theme::LIVE_FG))),
-        Some((_, false)) => spans.push(Span::styled("  ● live (top level only)", Style::new().fg(theme::LIVE_FG))),
+        Some((_, false)) => spans.push(Span::styled(
+            "  ● live (top level only)",
+            Style::new().fg(theme::LIVE_FG),
+        )),
         None => {}
     }
     if tree.errors > 0 {
-        spans.push(Span::styled(format!("  {} unreadable", fmt::count(tree.errors as u64)), Style::new().fg(theme::ERROR_FG)));
+        spans.push(Span::styled(
+            format!("  {} unreadable", fmt::count(tree.errors as u64)),
+            Style::new().fg(theme::ERROR_FG),
+        ));
     }
     let left = Line::from(spans);
     let hints = match app.view {
@@ -264,17 +332,29 @@ fn draw_help(f: &mut Frame, area: Rect) {
         .iter()
         .map(|(k, v)| {
             Line::from(vec![
-                Span::styled(format!(" {k:<18}"), Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!(" {k:<18}"),
+                    Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(*v),
             ])
         })
         .collect();
     let w = 56.min(area.width);
     let h = (lines.len() as u16 + 2).min(area.height);
-    let popup = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
+    let popup = Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    );
     f.render_widget(Clear, popup);
     f.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title(" dvt keys ").title_bottom(" any key to close ")),
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .title(" dvt keys ")
+                .title_bottom(" any key to close "),
+        ),
         popup,
     );
 }
@@ -284,7 +364,11 @@ fn tilde(path: &Path) -> String {
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
         && let Ok(rest) = path.strip_prefix(&home)
     {
-        return if rest.as_os_str().is_empty() { "~".into() } else { format!("~/{}", rest.display()) };
+        return if rest.as_os_str().is_empty() {
+            "~".into()
+        } else {
+            format!("~/{}", rest.display())
+        };
     }
     path.display().to_string()
 }

@@ -55,7 +55,11 @@ fn mix(c: Rgb, t: f32) -> Rgb {
 pub fn tile_style(bg: Rgb) -> Style {
     let (r, g, b) = bg;
     let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
-    let fg = if luma > 150.0 { Color::Black } else { Color::White };
+    let fg = if luma > 150.0 {
+        Color::Black
+    } else {
+        Color::White
+    };
     Style::new().bg(rgb(bg)).fg(fg)
 }
 
@@ -66,7 +70,10 @@ pub fn edge(bg: Rgb) -> Color {
 }
 
 pub fn selected_row() -> Style {
-    Style::new().bg(ACCENT).fg(Color::Black).add_modifier(Modifier::BOLD)
+    Style::new()
+        .bg(ACCENT)
+        .fg(Color::Black)
+        .add_modifier(Modifier::BOLD)
 }
 
 pub fn dim() -> Style {

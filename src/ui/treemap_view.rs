@@ -28,12 +28,26 @@ const CELL_ASPECT: f64 = 2.0;
 
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let total: u64 = app.children.iter().map(|&id| app.tree.get(id).disk).sum();
-    app.tiles = layout(&app.tree, &app.children, app.children.len(), total, area, MIN_TILE_CELLS, MAX_TILES);
+    app.tiles = layout(
+        &app.tree,
+        &app.children,
+        app.children.len(),
+        total,
+        area,
+        MIN_TILE_CELLS,
+        MAX_TILES,
+    );
     if app.tiles.is_empty() {
-        let text = if app.scan_elapsed().is_some() { "scanning…" } else { "(empty)" };
+        let text = if app.scan_elapsed().is_some() {
+            "scanning…"
+        } else {
+            "(empty)"
+        };
         let y = area.y + area.height / 2;
         f.render_widget(
-            Paragraph::new(text).style(theme::dim()).alignment(Alignment::Center),
+            Paragraph::new(text)
+                .style(theme::dim())
+                .alignment(Alignment::Center),
             Rect::new(area.x, y, area.width, 1),
         );
         return;
@@ -49,7 +63,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
 /// Lays out the `ids` (sorted largest first; the largest of `n_all` children
 /// totalling `total`) in `area`. Whatever is too small, beyond `max_tiles`, or
 /// not in `ids` becomes one trailing "others" tile.
-fn layout(tree: &Tree, ids: &[NodeId], n_all: usize, total: u64, area: Rect, min_cells: f64, max_tiles: usize) -> Vec<Tile> {
+fn layout(
+    tree: &Tree,
+    ids: &[NodeId],
+    n_all: usize,
+    total: u64,
+    area: Rect,
+    min_cells: f64,
+    max_tiles: usize,
+) -> Vec<Tile> {
     if total == 0 || area.is_empty() {
         return Vec::new();
     }
@@ -69,11 +91,20 @@ fn layout(tree: &Tree, ids: &[NodeId], n_all: usize, total: u64, area: Rect, min
     let kept = items.len();
     let rest = total.saturating_sub(kept_disk);
     if rest > 0 {
-        items.push(TileItem::Others { first: kept, count: n_all - kept, disk: rest });
+        items.push(TileItem::Others {
+            first: kept,
+            count: n_all - kept,
+            disk: rest,
+        });
         values.push(rest as f64);
     }
 
-    let bounds = FRect { x: 0.0, y: 0.0, w: area.width as f64, h: area.height as f64 * CELL_ASPECT };
+    let bounds = FRect {
+        x: 0.0,
+        y: 0.0,
+        w: area.width as f64,
+        h: area.height as f64 * CELL_ASPECT,
+    };
     squarify(&values, bounds)
         .into_iter()
         .zip(items)
@@ -82,7 +113,12 @@ fn layout(tree: &Tree, ids: &[NodeId], n_all: usize, total: u64, area: Rect, min
             let x1 = (r.x + r.w).round() as u16;
             let y0 = (r.y / CELL_ASPECT).round() as u16;
             let y1 = ((r.y + r.h) / CELL_ASPECT).round() as u16;
-            let rect = Rect::new(area.x + x0, area.y + y0, x1.saturating_sub(x0), y1.saturating_sub(y0));
+            let rect = Rect::new(
+                area.x + x0,
+                area.y + y0,
+                x1.saturating_sub(x0),
+                y1.saturating_sub(y0),
+            );
             (!rect.is_empty()).then_some(Tile { item, rect })
         })
         .collect()
@@ -90,7 +126,11 @@ fn layout(tree: &Tree, ids: &[NodeId], n_all: usize, total: u64, area: Rect, min
 
 /// Greedy colouring: each tile takes the first shade (from `shade(cat, n)`)
 /// that none of its already-coloured neighbours in the same category use.
-fn assign_colors(tree: &Tree, tiles: &[Tile], shade: impl Fn(Option<Category>, usize) -> Rgb) -> Vec<Rgb> {
+fn assign_colors(
+    tree: &Tree,
+    tiles: &[Tile],
+    shade: impl Fn(Option<Category>, usize) -> Rgb,
+) -> Vec<Rgb> {
     let cats: Vec<Option<Category>> = tiles.iter().map(|t| category(tree, t.item)).collect();
     let mut chosen: Vec<usize> = Vec::with_capacity(tiles.len());
     for (i, t) in tiles.iter().enumerate() {
@@ -100,7 +140,10 @@ fn assign_colors(tree: &Tree, tiles: &[Tile], shade: impl Fn(Option<Category>, u
             .collect();
         chosen.push((0..).find(|c| !taken.contains(c)).unwrap());
     }
-    cats.into_iter().zip(chosen).map(|(cat, c)| shade(cat, c)).collect()
+    cats.into_iter()
+        .zip(chosen)
+        .map(|(cat, c)| shade(cat, c))
+        .collect()
 }
 
 fn category(tree: &Tree, item: TileItem) -> Option<Category> {
@@ -126,7 +169,9 @@ fn label(tree: &Tree, item: TileItem) -> (Option<Kind>, String, u64) {
             }
             (Some(n.kind), name, n.disk)
         }
-        TileItem::Others { count, disk, .. } => (None, format!("+{} more", fmt::count(count as u64)), disk),
+        TileItem::Others { count, disk, .. } => {
+            (None, format!("+{} more", fmt::count(count as u64)), disk)
+        }
     }
 }
 
@@ -135,7 +180,12 @@ fn draw_tile(buf: &mut Buffer, tree: &Tree, tile: &Tile, base: Rgb, selected: bo
     let (kind, name, disk) = label(tree, tile.item);
     let bg = if selected { theme::SELECTED } else { base };
     let bold = kind == Some(Kind::Dir) || selected;
-    let inner = Rect::new(r.x + 1, r.y + 1, r.width.saturating_sub(2), r.height.saturating_sub(2));
+    let inner = Rect::new(
+        r.x + 1,
+        r.y + 1,
+        r.width.saturating_sub(2),
+        r.height.saturating_sub(2),
+    );
 
     let TileItem::Node(id) = tile.item else {
         paint(buf, r, bg, &name, disk, bold, false);
@@ -152,7 +202,15 @@ fn draw_tile(buf: &mut Buffer, tree: &Tree, tile: &Tile, base: Rgb, selected: bo
     let n_all = tree.children(id).len();
     let ids = tree.largest_children(id, MAX_INNER_TILES);
     let total: u64 = tree.children(id).iter().map(|&c| tree.get(c).disk).sum();
-    let tiles = layout(tree, &ids, n_all, total, inner, MIN_INNER_CELLS, MAX_INNER_TILES);
+    let tiles = layout(
+        tree,
+        &ids,
+        n_all,
+        total,
+        inner,
+        MIN_INNER_CELLS,
+        MAX_INNER_TILES,
+    );
     let colors = assign_colors(tree, &tiles, |cat, c| match cat {
         Some(Category::Dir) => theme::inner_shade(base, c),
         _ => theme::tile_bg(cat, c),
@@ -193,7 +251,11 @@ fn paint(buf: &mut Buffer, r: Rect, bg: Rgb, name: &str, disk: u64, bold: bool, 
     if width == 0 {
         return;
     }
-    let label = if bold { style.add_modifier(Modifier::BOLD) } else { style };
+    let label = if bold {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
+    };
     let size = fmt::size(disk);
     let fits = |s: &str| Span::raw(s).width() <= width as usize;
     // A name cut to a letter or two is noise; a cut size is misleading.

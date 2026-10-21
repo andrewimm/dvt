@@ -16,23 +16,42 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     app.list_area = area;
     let tree = &app.tree;
     let total = tree.get(app.cwd).disk.max(1);
-    let largest = app.children.first().map_or(1, |&id| tree.get(id).disk.max(1));
+    let largest = app
+        .children
+        .first()
+        .map_or(1, |&id| tree.get(id).disk.max(1));
     let sel = app.selected_index();
-    let visible = scroll(&mut app.list_offset, sel, app.children.len(), body_height(area));
+    let visible = scroll(
+        &mut app.list_offset,
+        sel,
+        app.children.len(),
+        body_height(area),
+    );
 
     let rows = app.children[visible.clone()].iter().map(|&id| {
         let n = tree.get(id);
-        let items = if n.is_dir() { fmt::count(n.items as u64) } else { String::new() };
+        let items = if n.is_dir() {
+            fmt::count(n.items as u64)
+        } else {
+            String::new()
+        };
         Row::new([
             Cell::from(Line::from(fmt::size(n.disk)).right_aligned()),
             Cell::from(bar(n.disk as f64 / largest as f64)),
-            Cell::from(Line::from(format!("{:.1}%", n.disk as f64 * 100.0 / total as f64)).right_aligned()),
+            Cell::from(
+                Line::from(format!("{:.1}%", n.disk as f64 * 100.0 / total as f64)).right_aligned(),
+            ),
             Cell::from(Line::from(items).right_aligned()),
-            Cell::from(name_line(tree, id, tree.name(id).to_string_lossy().into_owned())),
+            Cell::from(name_line(
+                tree,
+                id,
+                tree.name(id).to_string_lossy().into_owned(),
+            )),
         ])
     });
 
-    let header = Row::new(["Size", "", "%", "Items", "Name"].map(|h| Cell::from(h).style(theme::dim())));
+    let header =
+        Row::new(["Size", "", "%", "Items", "Name"].map(|h| Cell::from(h).style(theme::dim())));
     let widths = [
         Constraint::Length(7),
         Constraint::Length(BAR_WIDTH as u16),
@@ -40,7 +59,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         Constraint::Length(10),
         Constraint::Min(10),
     ];
-    render_table(f, area, rows, header, &widths, sel.map(|i| i - visible.start));
+    render_table(
+        f,
+        area,
+        rows,
+        header,
+        &widths,
+        sel.map(|i| i - visible.start),
+    );
 }
 
 /// Renders a table whose rows are already cut to the visible window, with the
@@ -68,7 +94,12 @@ pub fn body_height(area: Rect) -> usize {
 
 /// Adjusts `offset` so the selected row stays in view, and returns the range
 /// of rows to draw. Only visible rows are built, so huge directories stay fast.
-pub fn scroll(offset: &mut usize, selected: Option<usize>, len: usize, height: usize) -> std::ops::Range<usize> {
+pub fn scroll(
+    offset: &mut usize,
+    selected: Option<usize>,
+    len: usize,
+    height: usize,
+) -> std::ops::Range<usize> {
     let height = height.max(1);
     if let Some(sel) = selected {
         if sel < *offset {
@@ -101,7 +132,10 @@ pub fn name_line(tree: &Tree, id: NodeId, mut label: String) -> Line<'static> {
     }
     spans.push(Span::styled(label, style));
     if n.has(flags::HARDLINK_DUP) {
-        spans.push(Span::styled("  (hardlink, counted elsewhere)", theme::dim()));
+        spans.push(Span::styled(
+            "  (hardlink, counted elsewhere)",
+            theme::dim(),
+        ));
     }
     if n.has(flags::OTHER_FS) {
         spans.push(Span::styled("  (other filesystem, skipped)", theme::dim()));

@@ -43,35 +43,78 @@ impl Category {
 }
 
 const MEDIA: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "heic", "heif", "avif", "svg", "ico", "raw", "cr2", "cr3",
-    "nef", "arw", "dng", "psd", "xcf", "kra", "exr", "hdr", "blend", "mp4", "mkv", "mov", "avi", "webm", "m4v", "wmv",
-    "flv", "mpg", "mpeg", "3gp", "mp3", "flac", "wav", "ogg", "opus", "m4a", "aac", "wma", "aiff", "mid", "midi",
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "heic", "heif", "avif", "svg",
+    "ico", "raw", "cr2", "cr3", "nef", "arw", "dng", "psd", "xcf", "kra", "exr", "hdr", "blend",
+    "mp4", "mkv", "mov", "avi", "webm", "m4v", "wmv", "flv", "mpg", "mpeg", "3gp", "mp3", "flac",
+    "wav", "ogg", "opus", "m4a", "aac", "wma", "aiff", "mid", "midi",
 ];
 const ARCHIVE: &[&str] = &[
-    "zip", "tar", "gz", "tgz", "bz2", "xz", "txz", "zst", "zstd", "lz4", "lzma", "7z", "rar", "iso", "img", "dmg",
-    "deb", "rpm", "apk", "pkg", "snap", "flatpak", "appimage", "qcow2", "vdi", "vmdk", "vhd", "vhdx", "cab", "msi",
-    "jar", "war", "whl", "crate", "gem", "nupkg",
+    "zip", "tar", "gz", "tgz", "bz2", "xz", "txz", "zst", "zstd", "lz4", "lzma", "7z", "rar",
+    "iso", "img", "dmg", "deb", "rpm", "apk", "pkg", "snap", "flatpak", "appimage", "qcow2", "vdi",
+    "vmdk", "vhd", "vhdx", "cab", "msi", "jar", "war", "whl", "crate", "gem", "nupkg",
 ];
 const CODE: &[&str] = &[
-    "rs", "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "py", "pyi", "js", "mjs", "cjs", "ts", "tsx", "jsx", "go", "java",
-    "kt", "kts", "scala", "swift", "m", "mm", "cs", "fs", "rb", "php", "pl", "lua", "sh", "bash", "zsh", "fish", "ps1",
-    "bat", "sql", "r", "jl", "ex", "exs", "erl", "hs", "ml", "clj", "dart", "zig", "nim", "asm", "s", "html", "htm",
-    "css", "scss", "sass", "less", "vue", "svelte", "md", "rst", "txt", "toml", "yaml", "yml", "json", "jsonc", "xml",
-    "ini", "cfg", "conf", "lock", "gradle", "cmake", "mk", "nix", "tex", "patch", "diff", "glsl", "hlsl", "wgsl",
+    "rs", "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "py", "pyi", "js", "mjs", "cjs", "ts", "tsx",
+    "jsx", "go", "java", "kt", "kts", "scala", "swift", "m", "mm", "cs", "fs", "rb", "php", "pl",
+    "lua", "sh", "bash", "zsh", "fish", "ps1", "bat", "sql", "r", "jl", "ex", "exs", "erl", "hs",
+    "ml", "clj", "dart", "zig", "nim", "asm", "s", "html", "htm", "css", "scss", "sass", "less",
+    "vue", "svelte", "md", "rst", "txt", "toml", "yaml", "yml", "json", "jsonc", "xml", "ini",
+    "cfg", "conf", "lock", "gradle", "cmake", "mk", "nix", "tex", "patch", "diff", "glsl", "hlsl",
+    "wgsl",
 ];
-const CODE_NAMES: &[&str] = &["makefile", "dockerfile", "license", "readme", "justfile", "rakefile", "gemfile"];
+const CODE_NAMES: &[&str] = &[
+    "makefile",
+    "dockerfile",
+    "license",
+    "readme",
+    "justfile",
+    "rakefile",
+    "gemfile",
+];
 const DOCUMENT: &[&str] = &[
-    "pdf", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "ppt", "pptx", "odp", "epub", "mobi", "djvu", "pages",
-    "numbers", "key",
+    "pdf", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "ppt", "pptx", "odp", "epub", "mobi",
+    "djvu", "pages", "numbers", "key",
 ];
 const BUILD: &[&str] = &[
-    "o", "obj", "a", "so", "dll", "dylib", "lib", "exe", "bin", "elf", "rlib", "rmeta", "d", "class", "pyc", "pyo",
-    "wasm", "dex", "out", "pdb", "ilk", "pch", "gch", "node",
+    "o", "obj", "a", "so", "dll", "dylib", "lib", "exe", "bin", "elf", "rlib", "rmeta", "d",
+    "class", "pyc", "pyo", "wasm", "dex", "out", "pdb", "ilk", "pch", "gch", "node",
 ];
 const DATA: &[&str] = &[
-    "db", "sqlite", "sqlite3", "mdb", "parquet", "arrow", "feather", "avro", "orc", "h5", "hdf5", "npy", "npz", "pt",
-    "pth", "ckpt", "safetensors", "gguf", "ggml", "onnx", "tflite", "pb", "pkl", "pickle", "csv", "tsv", "log", "bak",
-    "dump", "pack", "idx", "sav", "mbox", "pst", "ost",
+    "db",
+    "sqlite",
+    "sqlite3",
+    "mdb",
+    "parquet",
+    "arrow",
+    "feather",
+    "avro",
+    "orc",
+    "h5",
+    "hdf5",
+    "npy",
+    "npz",
+    "pt",
+    "pth",
+    "ckpt",
+    "safetensors",
+    "gguf",
+    "ggml",
+    "onnx",
+    "tflite",
+    "pb",
+    "pkl",
+    "pickle",
+    "csv",
+    "tsv",
+    "log",
+    "bak",
+    "dump",
+    "pack",
+    "idx",
+    "sav",
+    "mbox",
+    "pst",
+    "ost",
 ];
 
 pub fn categorize(kind: Kind, name: &OsStr) -> Category {
@@ -83,7 +126,10 @@ pub fn categorize(kind: Kind, name: &OsStr) -> Category {
     let ext = match bytes.iter().rposition(|&b| b == b'.') {
         Some(i) if i > 0 => &bytes[i + 1..],
         _ => {
-            return if CODE_NAMES.iter().any(|n| n.as_bytes().eq_ignore_ascii_case(bytes)) {
+            return if CODE_NAMES
+                .iter()
+                .any(|n| n.as_bytes().eq_ignore_ascii_case(bytes))
+            {
                 Category::Code
             } else {
                 Category::Other

@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::layout::{Position, Rect};
 use rayon::ThreadPool;
 
@@ -24,7 +26,11 @@ pub enum View {
 pub enum TileItem {
     Node(NodeId),
     /// Everything from `children[first..]` merged into one tile.
-    Others { first: usize, count: usize, disk: u64 },
+    Others {
+        first: usize,
+        count: usize,
+        disk: u64,
+    },
 }
 
 pub struct Tile {
@@ -155,8 +161,19 @@ impl App {
     }
 
     fn start_scan(&mut self, id: NodeId, skip: Option<std::ffi::OsString>, send_root: bool) {
-        let req = Request { path: self.tree.path(id), id, skip, send_root };
-        scan::spawn(req, self.tree.ids.clone(), self.opts, &self.pool, self.tx.clone());
+        let req = Request {
+            path: self.tree.path(id),
+            id,
+            skip,
+            send_root,
+        };
+        scan::spawn(
+            req,
+            self.tree.ids.clone(),
+            self.opts,
+            &self.pool,
+            self.tx.clone(),
+        );
         self.scans += 1;
         self.scan_started.get_or_insert_with(Instant::now);
     }
@@ -188,7 +205,9 @@ impl App {
         }
         // The directory being viewed may have been deleted.
         while !self.tree.is_live(self.cwd) {
-            let Some(p) = self.tree.parent(self.cwd) else { break };
+            let Some(p) = self.tree.parent(self.cwd) else {
+                break;
+            };
             self.set_cwd(p);
         }
         self.process_changes();
@@ -227,7 +246,9 @@ impl App {
             }
         }
         s.took = start.elapsed();
-        s.sel = prev.and_then(|id| s.results.iter().position(|&r| r == id)).unwrap_or(0);
+        s.sel = prev
+            .and_then(|id| s.results.iter().position(|&r| r == id))
+            .unwrap_or(0);
         s.stale = false;
         s.last_run = Instant::now();
     }
@@ -248,7 +269,11 @@ impl App {
                     self.run_search(false);
                 }
             }
-            KeyCode::Char(c) if !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            KeyCode::Char(c)
+                if !k
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
                 self.search.query.push(c);
                 self.run_search(false);
             }
@@ -258,17 +283,23 @@ impl App {
 
     fn move_result(&mut self, delta: isize) {
         let last = self.search.results.len().saturating_sub(1) as isize;
-        self.search.sel = (self.search.sel as isize).saturating_add(delta).clamp(0, last) as usize;
+        self.search.sel = (self.search.sel as isize)
+            .saturating_add(delta)
+            .clamp(0, last) as usize;
     }
 
     /// Closes the search and shows the selected result in its directory.
     fn jump_to_result(&mut self) {
-        let Some(&id) = self.search.results.get(self.search.sel) else { return };
+        let Some(&id) = self.search.results.get(self.search.sel) else {
+            return;
+        };
         if !self.tree.is_live(id) {
             self.run_search(false);
             return;
         }
-        let Some(parent) = self.tree.parent(id) else { return };
+        let Some(parent) = self.tree.parent(id) else {
+            return;
+        };
         self.search.open = false;
         self.set_cwd(parent);
         self.sel.insert(parent, id);
@@ -327,7 +358,9 @@ impl App {
         let mut dirs = HashSet::new();
         for path in std::mem::take(&mut self.changed) {
             // A change to an entry means its parent directory's listing changed.
-            let Some(parent) = path.parent() else { continue };
+            let Some(parent) = path.parent() else {
+                continue;
+            };
             if let Some(id) = self.tree.lookup(parent) {
                 dirs.insert((id, path));
             }
@@ -339,13 +372,23 @@ impl App {
             if !n.is_dir() || !n.has(flags::SCANNED) || refreshed.contains(&id) {
                 continue;
             }
-            if self.last_refresh.get(&id).is_some_and(|t| t.elapsed() < REFRESH_INTERVAL) {
+            if self
+                .last_refresh
+                .get(&id)
+                .is_some_and(|t| t.elapsed() < REFRESH_INTERVAL)
+            {
                 self.changed.insert(path); // try again later
                 continue;
             }
             refreshed.insert(id);
             self.last_refresh.insert(id, Instant::now());
-            scan::refresh(self.tree.path(id), id, self.opts, &self.pool, self.tx.clone());
+            scan::refresh(
+                self.tree.path(id),
+                id,
+                self.opts,
+                &self.pool,
+                self.tx.clone(),
+            );
         }
     }
 
@@ -360,7 +403,8 @@ impl App {
             (false, Some(_)) => None,
             (true, Some((id, _))) if id == self.cwd && self.scans > 0 => return,
             (true, _) => {
-                let recursive = self.scans == 0 && self.tree.get(self.cwd).items <= RECURSIVE_WATCH_LIMIT;
+                let recursive =
+                    self.scans == 0 && self.tree.get(self.cwd).items <= RECURSIVE_WATCH_LIMIT;
                 Some((self.cwd, recursive))
             }
         };
@@ -376,7 +420,11 @@ impl App {
             self.run_search(true);
         }
         self.update_watch();
-        if self.message.as_ref().is_some_and(|(_, t)| t.elapsed() > MESSAGE_TTL) {
+        if self
+            .message
+            .as_ref()
+            .is_some_and(|(_, t)| t.elapsed() > MESSAGE_TTL)
+        {
             self.message = None;
         }
     }
@@ -394,7 +442,10 @@ impl App {
             return None;
         }
         let id = self.sel.get(&self.cwd);
-        Some(id.and_then(|id| self.children.iter().position(|c| c == id)).unwrap_or(0))
+        Some(
+            id.and_then(|id| self.children.iter().position(|c| c == id))
+                .unwrap_or(0),
+        )
     }
 
     pub fn selected(&self) -> Option<NodeId> {
@@ -451,12 +502,18 @@ impl App {
             (_, KeyCode::Tab) => self.toggle_view(),
             (_, KeyCode::Enter) => self.enter(),
             (_, KeyCode::Backspace | KeyCode::Char('u')) => self.up(),
-            (_, KeyCode::Char('r')) => self.rescan(self.selected().filter(|&id| self.tree.get(id).is_dir())),
+            (_, KeyCode::Char('r')) => {
+                self.rescan(self.selected().filter(|&id| self.tree.get(id).is_dir()))
+            }
             (_, KeyCode::Char('R')) => self.rescan(Some(self.cwd)),
             (_, KeyCode::Char('y')) => self.copy_path(),
             (_, KeyCode::Char('n')) => {
                 self.nested = !self.nested;
-                self.say(if self.nested { "nested treemap on" } else { "nested treemap off" });
+                self.say(if self.nested {
+                    "nested treemap on"
+                } else {
+                    "nested treemap off"
+                });
             }
             (_, KeyCode::Char('w')) => self.toggle_live(),
 
@@ -470,7 +527,9 @@ impl App {
             (View::List, KeyCode::PageUp) => self.move_list(-(self.page() as isize)),
             (View::List, KeyCode::PageDown) => self.move_list(self.page() as isize),
             (View::List, KeyCode::Home | KeyCode::Char('g')) => self.select_index(0),
-            (View::List, KeyCode::End | KeyCode::Char('G')) => self.select_index(self.children.len().saturating_sub(1)),
+            (View::List, KeyCode::End | KeyCode::Char('G')) => {
+                self.select_index(self.children.len().saturating_sub(1))
+            }
             (View::List, KeyCode::Right | KeyCode::Char('l')) => self.enter(),
             (View::List, KeyCode::Left | KeyCode::Char('h')) => self.up(),
             _ => {}
@@ -486,7 +545,12 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 match self.view {
                     View::Treemap => {
-                        let Some(item) = self.tiles.iter().find(|t| t.rect.contains(pos)).map(|t| t.item) else {
+                        let Some(item) = self
+                            .tiles
+                            .iter()
+                            .find(|t| t.rect.contains(pos))
+                            .map(|t| t.item)
+                        else {
                             return false;
                         };
                         // Clicking the selected tile opens it.
@@ -553,7 +617,11 @@ impl App {
             }
         }
         self.live = !self.live;
-        self.say(if self.live { "live updates on" } else { "live updates off" });
+        self.say(if self.live {
+            "live updates on"
+        } else {
+            "live updates off"
+        });
     }
 
     fn set_cwd(&mut self, id: NodeId) {
@@ -563,7 +631,9 @@ impl App {
     }
 
     fn enter(&mut self) {
-        let Some(i) = self.selected_index() else { return };
+        let Some(i) = self.selected_index() else {
+            return;
+        };
         // In the treemap, opening the merged "others" tile shows them in the list.
         if self.view == View::Treemap {
             let others = self.tiles.iter().find_map(|t| match t.item {
@@ -617,7 +687,12 @@ impl App {
     /// Moves to the nearest tile in direction `dir`, preferring tiles that
     /// overlap the current one on the perpendicular axis.
     fn move_spatial(&mut self, dir: Dir) {
-        let Some(cur) = self.tiles.iter().find(|t| self.tile_selected(&t.item)).map(|t| t.rect) else {
+        let Some(cur) = self
+            .tiles
+            .iter()
+            .find(|t| self.tile_selected(&t.item))
+            .map(|t| t.rect)
+        else {
             return;
         };
         let best = self
@@ -627,10 +702,26 @@ impl App {
                 let r = t.rect;
                 // (gap along the direction, perpendicular overlap, perpendicular center offset)
                 let (gap, overlap, offset) = match dir {
-                    Dir::Left if r.right() <= cur.x => (cur.x - r.right(), span_overlap(cur.y, cur.bottom(), r.y, r.bottom()), center_dist(cur.y, cur.height, r.y, r.height)),
-                    Dir::Right if r.x >= cur.right() => (r.x - cur.right(), span_overlap(cur.y, cur.bottom(), r.y, r.bottom()), center_dist(cur.y, cur.height, r.y, r.height)),
-                    Dir::Up if r.bottom() <= cur.y => (cur.y - r.bottom(), span_overlap(cur.x, cur.right(), r.x, r.right()), center_dist(cur.x, cur.width, r.x, r.width)),
-                    Dir::Down if r.y >= cur.bottom() => (r.y - cur.bottom(), span_overlap(cur.x, cur.right(), r.x, r.right()), center_dist(cur.x, cur.width, r.x, r.width)),
+                    Dir::Left if r.right() <= cur.x => (
+                        cur.x - r.right(),
+                        span_overlap(cur.y, cur.bottom(), r.y, r.bottom()),
+                        center_dist(cur.y, cur.height, r.y, r.height),
+                    ),
+                    Dir::Right if r.x >= cur.right() => (
+                        r.x - cur.right(),
+                        span_overlap(cur.y, cur.bottom(), r.y, r.bottom()),
+                        center_dist(cur.y, cur.height, r.y, r.height),
+                    ),
+                    Dir::Up if r.bottom() <= cur.y => (
+                        cur.y - r.bottom(),
+                        span_overlap(cur.x, cur.right(), r.x, r.right()),
+                        center_dist(cur.x, cur.width, r.x, r.width),
+                    ),
+                    Dir::Down if r.y >= cur.bottom() => (
+                        r.y - cur.bottom(),
+                        span_overlap(cur.x, cur.right(), r.x, r.right()),
+                        center_dist(cur.x, cur.width, r.x, r.width),
+                    ),
                     _ => return None,
                 };
                 Some(((!overlap, gap, offset), t.item))
@@ -675,7 +766,10 @@ impl App {
     /// which also works over ssh.
     fn copy_path(&mut self) {
         let path = self.tree.path(self.selected().unwrap_or(self.cwd));
-        let seq = format!("\x1b]52;c;{}\x07", base64(path.as_os_str().as_encoded_bytes()));
+        let seq = format!(
+            "\x1b]52;c;{}\x07",
+            base64(path.as_os_str().as_encoded_bytes())
+        );
         let mut out = std::io::stdout();
         let _ = out.write_all(seq.as_bytes()).and_then(|_| out.flush());
         self.say(format!("copied {}", path.display()));
@@ -696,7 +790,11 @@ fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
         for i in 0..4 {
             if i <= chunk.len() {

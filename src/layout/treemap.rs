@@ -59,24 +59,50 @@ fn worst(sum: f64, max: f64, min: f64, side: f64) -> f64 {
 fn layout_row(row: &[f64], sum: f64, rect: FRect, is_last: bool, out: &mut Vec<FRect>) -> FRect {
     if rect.w >= rect.h {
         // A column on the left edge.
-        let w = if is_last { rect.w } else { (sum / rect.h).min(rect.w) };
+        let w = if is_last {
+            rect.w
+        } else {
+            (sum / rect.h).min(rect.w)
+        };
         let mut y = rect.y;
         for (i, a) in row.iter().enumerate() {
-            let h = if i == row.len() - 1 { rect.y + rect.h - y } else { a / w };
+            let h = if i == row.len() - 1 {
+                rect.y + rect.h - y
+            } else {
+                a / w
+            };
             out.push(FRect { x: rect.x, y, w, h });
             y += h;
         }
-        FRect { x: rect.x + w, y: rect.y, w: rect.w - w, h: rect.h }
+        FRect {
+            x: rect.x + w,
+            y: rect.y,
+            w: rect.w - w,
+            h: rect.h,
+        }
     } else {
         // A row along the top edge.
-        let h = if is_last { rect.h } else { (sum / rect.w).min(rect.h) };
+        let h = if is_last {
+            rect.h
+        } else {
+            (sum / rect.w).min(rect.h)
+        };
         let mut x = rect.x;
         for (i, a) in row.iter().enumerate() {
-            let w = if i == row.len() - 1 { rect.x + rect.w - x } else { a / h };
+            let w = if i == row.len() - 1 {
+                rect.x + rect.w - x
+            } else {
+                a / h
+            };
             out.push(FRect { x, y: rect.y, w, h });
             x += w;
         }
-        FRect { x: rect.x, y: rect.y + h, w: rect.w, h: rect.h - h }
+        FRect {
+            x: rect.x,
+            y: rect.y + h,
+            w: rect.w,
+            h: rect.h - h,
+        }
     }
 }
 
@@ -93,9 +119,14 @@ mod tests {
         let mut area = 0.0;
         for (r, v) in rects.iter().zip(values) {
             let expected = v / total * bounds.w * bounds.h;
-            assert!((r.w * r.h - expected).abs() < 1e-3 * expected.max(1.0), "{r:?} for {v}");
+            assert!(
+                (r.w * r.h - expected).abs() < 1e-3 * expected.max(1.0),
+                "{r:?} for {v}"
+            );
             assert!(r.x >= bounds.x - EPS && r.y >= bounds.y - EPS);
-            assert!(r.x + r.w <= bounds.x + bounds.w + EPS && r.y + r.h <= bounds.y + bounds.h + EPS);
+            assert!(
+                r.x + r.w <= bounds.x + bounds.w + EPS && r.y + r.h <= bounds.y + bounds.h + EPS
+            );
             area += r.w * r.h;
         }
         assert!((area - bounds.w * bounds.h).abs() < 1e-3);
@@ -112,14 +143,27 @@ mod tests {
     #[test]
     fn paper_example() {
         // The worked example from the paper: 6x4 with these areas.
-        let rects = check_tiling(&[6.0, 6.0, 4.0, 3.0, 2.0, 2.0, 1.0], FRect { x: 0.0, y: 0.0, w: 6.0, h: 4.0 });
+        let rects = check_tiling(
+            &[6.0, 6.0, 4.0, 3.0, 2.0, 2.0, 1.0],
+            FRect {
+                x: 0.0,
+                y: 0.0,
+                w: 6.0,
+                h: 4.0,
+            },
+        );
         // First row is a 3-wide column holding the two 6s.
         assert!((rects[0].w - 3.0).abs() < EPS && (rects[1].w - 3.0).abs() < EPS);
     }
 
     #[test]
     fn single_and_skewed() {
-        let b = FRect { x: 2.0, y: 3.0, w: 80.0, h: 48.0 };
+        let b = FRect {
+            x: 2.0,
+            y: 3.0,
+            w: 80.0,
+            h: 48.0,
+        };
         let r = check_tiling(&[5.0], b);
         assert_eq!(r[0], b);
         check_tiling(&[1000.0, 1.0, 1.0, 1.0, 0.5], b);
@@ -129,7 +173,18 @@ mod tests {
 
     #[test]
     fn degenerate_inputs() {
-        assert!(squarify(&[], FRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }).is_empty());
+        assert!(
+            squarify(
+                &[],
+                FRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 1.0
+                }
+            )
+            .is_empty()
+        );
         assert_eq!(squarify(&[1.0], FRect::default()), vec![FRect::default()]);
     }
 }

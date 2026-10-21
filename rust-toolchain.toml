@@ -1,0 +1,6 @@
+# Pinned exactly so everyone (and CI) compiles with the same compiler, and a
+# Rust release can't break the build without a commit here. Upgrading is a
+# deliberate one-line change.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]

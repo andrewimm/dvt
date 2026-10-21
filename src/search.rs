@@ -17,12 +17,18 @@ impl Matcher {
             return None;
         }
         let q = query.as_bytes().to_ascii_lowercase();
-        Some(if q.contains(&b'*') || q.contains(&b'?') { Matcher::Glob(q) } else { Matcher::Substring(q) })
+        Some(if q.contains(&b'*') || q.contains(&b'?') {
+            Matcher::Glob(q)
+        } else {
+            Matcher::Substring(q)
+        })
     }
 
     pub fn matches(&self, name: &[u8]) -> bool {
         match self {
-            Matcher::Substring(q) => name.len() >= q.len() && name.windows(q.len()).any(|w| w.eq_ignore_ascii_case(q)),
+            Matcher::Substring(q) => {
+                name.len() >= q.len() && name.windows(q.len()).any(|w| w.eq_ignore_ascii_case(q))
+            }
             Matcher::Glob(p) => glob(p, name),
         }
     }
@@ -64,8 +70,12 @@ const PARALLEL_THRESHOLD: u32 = 50_000;
 /// Finds the top-most entries below `under` whose names match. Runs on the
 /// current rayon pool for large subtrees.
 pub fn find(tree: &Tree, under: NodeId, m: &Matcher) -> Results {
-    let mut ids = if tree.get(under).items < PARALLEL_THRESHOLD { walk(tree, under, m) } else { scan_all(tree, under, m) };
-    ids.sort_unstable_by(|&a, &b| tree.get(b).disk.cmp(&tree.get(a).disk));
+    let mut ids = if tree.get(under).items < PARALLEL_THRESHOLD {
+        walk(tree, under, m)
+    } else {
+        scan_all(tree, under, m)
+    };
+    ids.sort_unstable_by_key(|&id| std::cmp::Reverse(tree.get(id).disk));
     let total = ids.iter().map(|&id| tree.get(id).disk).sum();
     Results { ids, total }
 }
@@ -122,13 +132,42 @@ mod tests {
     fn walk_and_parallel_scan_agree() {
         use crate::scan::{Entry, Msg};
         use crate::tree::{Kind, ROOT};
-        let e = |name: &str, kind| Entry { name: name.into(), kind, disk: 10, flags: 0 };
+        let e = |name: &str, kind| Entry {
+            name: name.into(),
+            kind,
+            disk: 10,
+            flags: 0,
+        };
         // /r: target/ (holds target/ and x.o), src/ (holds main.rs, target.txt), target.log
         let mut t = Tree::new("/r".into());
-        t.apply(Msg::Batch { dir: ROOT, first: 1, entries: vec![e("target", Kind::Dir), e("src", Kind::Dir), e("target.log", Kind::File)], error: false });
-        t.apply(Msg::Batch { dir: 1, first: 4, entries: vec![e("target", Kind::Dir), e("x.o", Kind::File)], error: false });
-        t.apply(Msg::Batch { dir: 2, first: 6, entries: vec![e("main.rs", Kind::File), e("target.txt", Kind::File)], error: false });
-        t.apply(Msg::Batch { dir: 4, first: 8, entries: vec![], error: false });
+        t.apply(Msg::Batch {
+            dir: ROOT,
+            first: 1,
+            entries: vec![
+                e("target", Kind::Dir),
+                e("src", Kind::Dir),
+                e("target.log", Kind::File),
+            ],
+            error: false,
+        });
+        t.apply(Msg::Batch {
+            dir: 1,
+            first: 4,
+            entries: vec![e("target", Kind::Dir), e("x.o", Kind::File)],
+            error: false,
+        });
+        t.apply(Msg::Batch {
+            dir: 2,
+            first: 6,
+            entries: vec![e("main.rs", Kind::File), e("target.txt", Kind::File)],
+            error: false,
+        });
+        t.apply(Msg::Batch {
+            dir: 4,
+            first: 8,
+            entries: vec![],
+            error: false,
+        });
 
         let m = Matcher::new("target").unwrap();
         for under in [ROOT, 2] {
