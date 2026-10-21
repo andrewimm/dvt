@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt, clippy, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # Sets up rustup; the compiler itself is rust-toolchain.toml's to choose,
+      # which outranks whatever is made default here.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked
+      - run: cargo test --locked
+
+  msrv:
+    name: minimum supported rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+      # RUSTUP_TOOLCHAIN, because rust-toolchain.toml outranks `rustup default`:
+      # without it this job would install 1.88 and then compile with the pinned
+      # toolchain, passing while proving nothing about 1.88.
+      - run: cargo check --locked
+        env:
+          RUSTUP_TOOLCHAIN: 1.88.0

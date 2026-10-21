@@ -1,0 +1,176 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # The same thing by hand, for a tag that already exists (a release that
+  # failed halfway). It builds the tag, not whatever main has now.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release, such as v0.1.1"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Matches rust-toolchain.toml; set explicitly so the release is built with a
+  # compiler somebody chose.
+  RUSTUP_TOOLCHAIN: 1.98.1
+
+jobs:
+  # Packages are built inside the oldest distribution they're meant to install
+  # on, never on the runner: glibc is not backward compatible, so a binary
+  # built against a newer one won't start on an older system, and the tools
+  # that work out a package's dependencies read the build machine's own
+  # package database.
+  deb:
+    name: build deb
+    runs-on: ubuntu-latest
+    container: debian:bookworm
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - run: |
+          apt-get update
+          apt-get install -y build-essential curl ca-certificates dpkg-dev
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain "$RUSTUP_TOOLCHAIN" --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      # Before anything is built: packages carry Cargo.toml's version, not the tag's.
+      - run: packaging/release-check.sh "${{ inputs.tag || github.ref_name }}"
+      - run: cargo install cargo-deb --locked
+      - run: cargo build --release --locked
+      - run: cargo deb --no-build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: target/debian/*.deb
+
+  # Fedora moves end-of-life releases to an archive, so this is the oldest one
+  # still supported rather than the oldest that ever existed.
+  rpm:
+    name: build rpm
+    runs-on: ubuntu-latest
+    container: fedora:43
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - run: dnf install -y gcc curl rpm-build
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain "$RUSTUP_TOOLCHAIN" --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - run: packaging/release-check.sh "${{ inputs.tag || github.ref_name }}"
+      - run: cargo install cargo-generate-rpm --locked
+      - run: cargo build --release --locked
+      - run: cargo generate-rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm
+          path: target/generate-rpm/*.rpm
+
+  # Arch has no stable ABI to target, so this is a convenience: the same recipe
+  # someone would run with makepkg, built against today's Arch.
+  arch:
+    name: build arch package
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - run: pacman -Syu --noconfirm --needed rust
+      - run: packaging/release-check.sh "${{ inputs.tag || github.ref_name }}"
+      # makepkg refuses to run as root, and the dependencies are installed
+      # above, so it's told not to look for them again.
+      - run: |
+          useradd -m builder
+          chown -R builder .
+          su builder -c 'cd packaging && makepkg --noconfirm --nodeps'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch
+          path: packaging/*.pkg.tar.zst
+
+  # Installing the package is the only real test of its dependency list, and
+  # it has to happen in a clean container: the one that built it has every
+  # build tool installed and satisfies everything by accident.
+  verify-deb:
+    name: install deb
+    needs: deb
+    runs-on: ubuntu-latest
+    container: debian:bookworm
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: deb
+      - run: |
+          apt-get update
+          apt-get install -y ./dvt_*.deb
+          dvt --version
+          # Exercises the scanner end to end, headless.
+          dvt --print /usr > /dev/null
+          test -f /usr/share/doc/dvt/copyright
+
+  verify-rpm:
+    name: install rpm
+    needs: rpm
+    runs-on: ubuntu-latest
+    container: fedora:43
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: rpm
+      - run: |
+          dnf install -y ./dvt-*.rpm
+          dvt --version
+          dvt --print /usr > /dev/null
+          test -f /usr/share/licenses/dvt/LICENSE
+
+  verify-arch:
+    name: install arch package
+    needs: arch
+    runs-on: ubuntu-latest
+    container: archlinux:base
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: arch
+      - run: |
+          pacman -Syu --noconfirm
+          pacman -U --noconfirm ./dvt-*.pkg.tar.zst
+          dvt --version
+          dvt --print /usr > /dev/null
+          test -f /usr/share/licenses/dvt/LICENSE
+
+  publish:
+    name: attach to the release
+    needs: [verify-deb, verify-rpm, verify-arch]
+    runs-on: ubuntu-latest
+    # Job permissions replace the workflow's, so contents is repeated.
+    permissions:
+      contents: write
+      # Provenance is signed with a short-lived certificate fetched with this
+      # token, so there's no signing key to keep or leak. Check a download with
+      # `gh attestation verify <file> --repo andrewimm/dvt`.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/**/*
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: dist/**/*

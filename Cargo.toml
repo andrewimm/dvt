@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "dvt (disk view tree): a read-only terminal disk usage visualizer with treemap and list views"
-authors = ["Andrew Imm"]
+license = "MIT"
+repository = "https://github.com/andrewimm/dvt"
 readme = "README.md"
 keywords = ["disk-usage", "treemap", "tui", "du"]
 categories = ["command-line-utilities", "filesystem"]
@@ -17,6 +18,38 @@ crossterm = "0.29"
 notify = "8.2.0"
 ratatui = "0.30.2"
 rayon = "1.12.0"
+
+[package.metadata.deb]
+maintainer = "Andrew Imm"
+copyright = "2026, Andrew Imm"
+license-file = ["LICENSE", "0"]
+section = "utils"
+priority = "optional"
+extended-description = """\
+A read-only terminal disk usage visualizer. Scans a directory in parallel and \
+shows what uses space as a squarified treemap or a sorted list, with search \
+and live updates."""
+# $auto reads the ELF headers; dvt links nothing beyond libc and libgcc_s.
+depends = "$auto"
+# Built first and packaged with --no-build, so the release profile is the one
+# CI chose rather than one cargo-deb picks.
+assets = [
+    ["target/release/dvt", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/dvt/", "644"],
+]
+
+[package.metadata.generate-rpm]
+summary = "Read-only terminal disk usage visualizer"
+# find-requires rather than the ldd fallback, which invents dependencies on
+# whatever the build host happened to have installed.
+auto-req = "find-requires"
+assets = [
+    { source = "target/release/dvt", dest = "/usr/bin/dvt", mode = "755" },
+    # Not doc: images installed with nodocs (Fedora's containers) drop %doc,
+    # and the licence has to ship regardless.
+    { source = "LICENSE", dest = "/usr/share/licenses/dvt/LICENSE", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/dvt/README.md", mode = "644", doc = true },
+]
 
 [profile.release]
 lto = true

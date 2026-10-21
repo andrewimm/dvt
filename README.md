@@ -19,23 +19,25 @@ sizes are file lengths rather than allocated space.
 
 ## Install
 
-### Arch Linux
-
-The PKGBUILD in `packaging/arch` builds the committed HEAD of this repository:
+Each [release](https://github.com/andrewimm/dvt/releases) has packages for
+Debian/Ubuntu, Fedora and Arch Linux (x86_64), built in CI and installed into a
+clean container before they're published.
 
 ```sh
-git clone <this repo> dvt
-cd dvt/packaging/arch
-makepkg -si
+sudo apt install ./dvt_<version>_amd64.deb          # Debian 12+, Ubuntu
+sudo dnf install ./dvt-<version>.x86_64.rpm          # Fedora 43+
+sudo pacman -U dvt-<version>-x86_64.pkg.tar.zst      # Arch
 ```
 
-To install on a machine without a Rust toolchain, build the package on one
-that has it and copy it over:
+Every package carries a build provenance attestation, so you can check it was
+built from this repository: `gh attestation verify <file> --repo andrewimm/dvt`.
+
+### Building the Arch package yourself
+
+`packaging/PKGBUILD` builds the checkout it sits in:
 
 ```sh
-cd packaging/arch && makepkg          # produces dvt-<version>-x86_64.pkg.tar.zst
-scp dvt-*.pkg.tar.zst other-pc:
-ssh other-pc sudo pacman -U dvt-*.pkg.tar.zst
+cd packaging && makepkg -si
 ```
 
 ### With cargo
@@ -45,6 +47,19 @@ cargo install --path .
 ```
 
 This puts `dvt` in `~/.cargo/bin`. Requires Rust 1.88 or newer.
+
+## Releasing
+
+Bump `version` in `Cargo.toml` and `pkgver` in `packaging/PKGBUILD`, commit,
+then tag and push:
+
+```sh
+packaging/release-check.sh v0.2.0   # confirms the tag matches both versions
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The release workflow builds the three packages, test-installs each one, and
+attaches them to the GitHub release.
 
 ## Usage
 
@@ -68,3 +83,7 @@ dvt [PATH]            scan PATH (default: the current directory)
 | y | copy path to clipboard (OSC 52) |
 | ? | help |
 | q | quit |
+
+## License
+
+MIT. See [LICENSE](LICENSE).
