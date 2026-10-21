@@ -295,6 +295,11 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
         )),
         None => {}
     }
+    match app.exclude_count() {
+        0 => {}
+        1 => spans.push(Span::styled("  1 exclude", theme::dim())),
+        n => spans.push(Span::styled(format!("  {n} excludes"), theme::dim())),
+    }
     if tree.errors > 0 {
         spans.push(Span::styled(
             format!("  {} unreadable", fmt::count(tree.errors as u64)),

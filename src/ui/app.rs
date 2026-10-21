@@ -170,12 +170,16 @@ impl App {
         scan::spawn(
             req,
             self.tree.ids.clone(),
-            self.opts,
+            self.opts.clone(),
             &self.pool,
             self.tx.clone(),
         );
         self.scans += 1;
         self.scan_started.get_or_insert_with(Instant::now);
+    }
+
+    pub fn exclude_count(&self) -> usize {
+        self.opts.excludes.len()
     }
 
     pub fn scan_elapsed(&self) -> Option<Duration> {
@@ -385,7 +389,7 @@ impl App {
             scan::refresh(
                 self.tree.path(id),
                 id,
-                self.opts,
+                self.opts.clone(),
                 &self.pool,
                 self.tx.clone(),
             );

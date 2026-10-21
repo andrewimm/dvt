@@ -2,6 +2,7 @@
 
 use rayon::prelude::*;
 
+use crate::glob;
 use crate::tree::{NodeId, Tree};
 
 /// A case-insensitive name matcher: a substring, or a glob when the query
@@ -29,31 +30,9 @@ impl Matcher {
             Matcher::Substring(q) => {
                 name.len() >= q.len() && name.windows(q.len()).any(|w| w.eq_ignore_ascii_case(q))
             }
-            Matcher::Glob(p) => glob(p, name),
+            Matcher::Glob(p) => glob::matches(p, name, true),
         }
     }
-}
-
-/// Iterative wildcard match with single-star backtracking.
-fn glob(pat: &[u8], name: &[u8]) -> bool {
-    let (mut p, mut n) = (0, 0);
-    let mut star: Option<(usize, usize)> = None;
-    while n < name.len() {
-        if p < pat.len() && (pat[p] == b'?' || pat[p] == name[n].to_ascii_lowercase()) {
-            p += 1;
-            n += 1;
-        } else if p < pat.len() && pat[p] == b'*' {
-            star = Some((p, n));
-            p += 1;
-        } else if let Some((sp, sn)) = star {
-            p = sp + 1;
-            n = sn + 1;
-            star = Some((sp, sn + 1));
-        } else {
-            return false;
-        }
-    }
-    pat[p..].iter().all(|&c| c == b'*')
 }
 
 pub struct Results {

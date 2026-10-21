@@ -38,6 +38,10 @@ pub mod flags {
     pub const OTHER_FS: u8 = 1 << 3;
     /// Not part of the tree: removed, replaced by a rescan, or never created.
     pub const DEAD: u8 = 1 << 4;
+    /// Matched an exclude pattern: listed, but not read or counted.
+    pub const EXCLUDED: u8 = 1 << 5;
+    /// Directories with any of these flags are not scanned.
+    pub const NO_DESCEND: u8 = ERROR | OTHER_FS | EXCLUDED;
 }
 
 /// 32 bytes per entry; names live in a shared byte arena and child lists in a
@@ -350,7 +354,7 @@ impl Tree {
         // Known limitation: a new hardlink to a file counted elsewhere is
         // counted again, since refreshes don't share the scan's inode set.
         for (i, e) in fresh.iter().enumerate() {
-            if e.kind == Kind::Dir && e.flags & (flags::ERROR | flags::OTHER_FS) == 0 {
+            if e.kind == Kind::Dir && e.flags & flags::NO_DESCEND == 0 {
                 new_dirs.push(first + i as NodeId);
             }
         }

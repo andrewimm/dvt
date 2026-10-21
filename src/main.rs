@@ -1,5 +1,7 @@
+mod exclude;
 mod filetype;
 mod fmt;
+mod glob;
 mod layout;
 mod scan;
 mod search;
@@ -8,13 +10,15 @@ mod ui;
 mod watch;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, bail};
 use clap::Parser;
 
+use crate::exclude::Excludes;
 use crate::scan::Msg;
-use crate::tree::{ROOT, Tree};
+use crate::tree::{ROOT, Tree, flags};
 
 /// dvt - disk view tree. A read-only terminal disk usage visualizer.
 #[derive(Parser)]
@@ -27,6 +31,16 @@ struct Cli {
     /// Stay on one filesystem (always on when scanning `/`)
     #[arg(short = 'x', long)]
     one_file_system: bool,
+
+    /// Skip entries matching PATTERN (repeatable). Without a `/` it matches
+    /// names at any depth (`node_modules`, `*.iso`); with one, full paths
+    /// (`/proc`, `/home/*/.cache`). A trailing `/` matches only directories.
+    #[arg(short, long, value_name = "PATTERN")]
+    exclude: Vec<String>,
+
+    /// Ignore the exclude file (~/.config/dvt/exclude, one pattern per line)
+    #[arg(long)]
+    no_exclude_file: bool,
 
     /// Don't watch for filesystem changes (toggle with `w` in the UI)
     #[arg(long)]
@@ -44,8 +58,17 @@ fn main() -> anyhow::Result<()> {
     if !root.is_dir() {
         bail!("{} is not a directory", root.display());
     }
+    let mut patterns = Vec::new();
+    if !cli.no_exclude_file
+        && let Some(file) = exclude::config_file()
+    {
+        patterns = exclude::read_file(&file)
+            .with_context(|| format!("cannot read exclude file {}", file.display()))?;
+    }
+    patterns.extend(cli.exclude);
     let opts = scan::Options {
         one_file_system: cli.one_file_system || root.parent().is_none(),
+        excludes: Arc::new(Excludes::new(&patterns)),
     };
 
     if cli.print {
@@ -78,8 +101,13 @@ fn print_summary(root: PathBuf, opts: scan::Options) {
     for id in tree.sorted_children(ROOT) {
         let n = tree.get(id);
         let slash = if n.is_dir() { "/" } else { "" };
+        let note = if n.has(flags::EXCLUDED) {
+            "  (excluded)"
+        } else {
+            ""
+        };
         println!(
-            "{:>8}  {}{slash}",
+            "{:>8}  {}{slash}{note}",
             fmt::size(n.disk),
             tree.name(id).to_string_lossy()
         );

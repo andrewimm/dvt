@@ -18,6 +18,7 @@ use std::thread;
 use crossbeam_channel::Sender;
 use rayon::{Scope, ThreadPool};
 
+use crate::exclude::Excludes;
 use crate::tree::{Kind, NodeId, flags};
 
 pub enum Msg {
@@ -52,10 +53,12 @@ pub struct Entry {
     pub flags: u8,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct Options {
     /// Don't descend into directories on other filesystems.
     pub one_file_system: bool,
+    /// Entries that are listed but neither read nor counted.
+    pub excludes: Arc<Excludes>,
 }
 
 pub struct Request {
@@ -159,7 +162,7 @@ fn walk<'s>(s: &Scope<'s>, path: PathBuf, id: NodeId, skip: Option<&OsStr>, ctx:
     let subdirs: Vec<(PathBuf, NodeId)> = entries
         .iter()
         .enumerate()
-        .filter(|(_, e)| e.kind == Kind::Dir && e.flags & (flags::ERROR | flags::OTHER_FS) == 0)
+        .filter(|(_, e)| e.kind == Kind::Dir && e.flags & flags::NO_DESCEND == 0)
         .map(|(i, e)| (path.join(&e.name), first + i as NodeId))
         .collect();
     if ctx
@@ -191,6 +194,21 @@ fn read_dir(path: &Path, ctx: &Ctx) -> (Vec<Entry>, bool) {
             continue;
         };
         let name = de.file_name();
+        // Checked before stat-ing: the file type usually comes free with the
+        // directory listing, and an excluded entry needs nothing more.
+        if !ctx.opts.excludes.is_empty() {
+            let is_dir = de.file_type().is_ok_and(|t| t.is_dir());
+            if ctx.opts.excludes.matches(path, &name, is_dir) {
+                let kind = if is_dir { Kind::Dir } else { Kind::File };
+                entries.push(Entry {
+                    name,
+                    kind,
+                    disk: 0,
+                    flags: flags::EXCLUDED,
+                });
+                continue;
+            }
+        }
         // `DirEntry::metadata` does not follow symlinks (fstatat on unix).
         let Ok(meta) = de.metadata() else {
             entries.push(Entry {

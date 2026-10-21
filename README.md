@@ -66,8 +66,29 @@ attaches them to the GitHub release.
 ```
 dvt [PATH]            scan PATH (default: the current directory)
   -x                  stay on one filesystem (always on when scanning /)
+  -e, --exclude PAT   skip entries matching PAT (repeatable)
+  --no-exclude-file   ignore ~/.config/dvt/exclude for this run
   --no-watch          don't watch for changes (toggle with w)
   --print             print a du-style summary instead of starting the UI
+```
+
+### Excluding things
+
+Excluded entries are neither read nor counted, like `du --exclude`, and show
+up in the list as `0B … (excluded)`. Patterns are shell globs, matched
+case-sensitively:
+
+- without a `/`, against names at any depth: `-e node_modules -e '*.iso'`
+- with a `/`, against full paths: `-e /proc -e '/home/*/.cache'`
+- with a trailing `/`, only directories: `-e target/`
+
+Patterns you always want go in `~/.config/dvt/exclude` (or
+`$XDG_CONFIG_HOME/dvt/exclude`), one per line, with `#` comments:
+
+```
+# build output and dependency caches
+target/
+node_modules
 ```
 
 | Key | Action |

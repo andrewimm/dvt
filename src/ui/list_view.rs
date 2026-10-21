@@ -137,6 +137,9 @@ pub fn name_line(tree: &Tree, id: NodeId, mut label: String) -> Line<'static> {
             theme::dim(),
         ));
     }
+    if n.has(flags::EXCLUDED) {
+        spans.push(Span::styled("  (excluded)", theme::dim()));
+    }
     if n.has(flags::OTHER_FS) {
         spans.push(Span::styled("  (other filesystem, skipped)", theme::dim()));
     }
