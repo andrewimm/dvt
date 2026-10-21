@@ -113,19 +113,12 @@ pub(super) fn read_dir(
 /// Fails only if the filesystem doesn't support `getattrlistbulk`.
 fn read_fd(fd: &OwnedFd, path: &Path, buf: &mut [u64], ctx: &Ctx) -> Result<(Listing, bool), ()> {
     let mut listing = Listing::default();
-    // Every entry that isn't a mount point is on the directory's device.
-    // SAFETY: fstat fills `st` on success.
-    let mut st: libc::stat = unsafe { std::mem::zeroed() };
-    if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } != 0 {
-        return Ok((listing, true));
-    }
-    let dev = st.st_dev as u64;
-
     let mut attrs = libc::attrlist {
         bitmapcount: libc::ATTR_BIT_MAP_COUNT,
         reserved: 0,
         commonattr: libc::ATTR_CMN_RETURNED_ATTRS
             | libc::ATTR_CMN_NAME
+            | libc::ATTR_CMN_DEVID
             | ATTR_CMN_ERROR
             | libc::ATTR_CMN_OBJTYPE
             | libc::ATTR_CMN_FLAGS
@@ -167,7 +160,7 @@ fn read_fd(fd: &OwnedFd, path: &Path, buf: &mut [u64], ctx: &Ctx) -> Result<(Lis
         let mut off = 0;
         for _ in 0..n {
             let len = read::<u32>(bytes, off) as usize;
-            parse(&bytes[off..off + len], path, dev, ctx, &mut listing);
+            parse(&bytes[off..off + len], path, ctx, &mut listing);
             off += len;
         }
     }
@@ -182,7 +175,7 @@ fn read<T: Copy>(b: &[u8], off: usize) -> T {
 
 /// Decodes one entry into `listing`. Only attributes in the returned set are
 /// packed, in bit order within each group.
-fn parse(e: &[u8], dir: &Path, dev: u64, ctx: &Ctx, listing: &mut Listing) {
+fn parse(e: &[u8], dir: &Path, ctx: &Ctx, listing: &mut Listing) {
     let mut p = size_of::<u32>();
     let ret: libc::attribute_set_t = read(e, p);
     p += size_of::<libc::attribute_set_t>();
@@ -200,6 +193,12 @@ fn parse(e: &[u8], dir: &Path, dev: u64, ctx: &Ctx, listing: &mut Listing) {
         let end = start + (r.attr_length as usize).saturating_sub(1);
         name = OsStr::from_bytes(&e[start..end]);
         p += size_of::<libc::attrreference_t>();
+    }
+    // For hardlink keys; mount points are told apart by their mount status.
+    let mut dev = 0;
+    if has(libc::ATTR_CMN_DEVID) {
+        dev = read::<libc::dev_t>(e, p) as u64;
+        p += size_of::<libc::dev_t>();
     }
     let mut obj_type = None;
     if has(libc::ATTR_CMN_OBJTYPE) {

@@ -17,7 +17,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
 
 use crossbeam_channel::Sender;
 use rayon::{Scope, ThreadPool};
@@ -165,17 +164,31 @@ pub struct Request {
 }
 
 pub fn pool() -> Arc<ThreadPool> {
-    // Scanning is mostly waiting on stat calls, so oversubscribe the cores.
-    let threads = thread::available_parallelism()
-        .map_or(4, |n| n.get() * 2)
-        .clamp(4, 64);
     Arc::new(
         rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
+            .num_threads(threads())
             .thread_name(|i| format!("dvt-scan-{i}"))
             .build()
             .expect("failed to build scanner thread pool"),
     )
+}
+
+/// Scanning is mostly waiting on stat calls, so oversubscribe the cores.
+#[cfg(not(target_os = "macos"))]
+fn threads() -> usize {
+    std::thread::available_parallelism()
+        .map_or(4, |n| n.get() * 2)
+        .clamp(4, 64)
+}
+
+/// On macOS nearly all the time is in the kernel, opening directories, and
+/// past a handful of threads they mostly contend with each other. Measured on
+/// a 6+4 core M2 Pro: 20 threads scanned `/` 8% faster than 8 but with 55%
+/// more system CPU, was no faster on a home directory, and twice took minutes
+/// on `/System/Library` where 8 never did.
+#[cfg(target_os = "macos")]
+fn threads() -> usize {
+    8
 }
 
 struct Ctx {
