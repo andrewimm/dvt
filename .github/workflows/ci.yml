@@ -11,8 +11,13 @@ env:
 
 jobs:
   check:
-    name: fmt, clippy, tests
-    runs-on: ubuntu-latest
+    name: fmt, clippy, tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS has its own scanner (getattrlistbulk) and watcher (FSEvents).
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       # Sets up rustup; the compiler itself is rust-toolchain.toml's to choose,
@@ -24,6 +29,8 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked
       - run: cargo test --locked
+      # Exercises the platform scanner end to end, headless.
+      - run: cargo run --locked -- --print /usr > /dev/null
 
   msrv:
     name: minimum supported rust version

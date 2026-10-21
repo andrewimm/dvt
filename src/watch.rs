@@ -1,9 +1,9 @@
-//! Watches the directory being viewed for changes (inotify on Linux, via the
-//! `notify` crate) and reports the paths that changed.
+//! Watches the directory being viewed for changes (inotify on Linux, FSEvents
+//! on macOS, via the `notify` crate) and reports the paths that changed.
 //!
-//! Adding a recursive watch walks the whole subtree, so it runs on a dedicated
-//! thread; if the view moves on while that is happening, only the latest
-//! request is honoured.
+//! Adding a recursive inotify watch walks the whole subtree, so it runs on a
+//! dedicated thread; if the view moves on while that is happening, only the
+//! latest request is honoured.
 
 use std::path::PathBuf;
 use std::thread;
@@ -12,9 +12,20 @@ use crossbeam_channel::{Receiver, Sender};
 use notify::event::{EventKind, ModifyKind};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher as _};
 
+/// FSEvents watches are always recursive, and cost nothing per directory.
+pub const RECURSIVE_IS_FREE: bool = cfg!(target_os = "macos");
+
+pub enum Change {
+    /// An entry was created, removed, renamed or written.
+    Path(PathBuf),
+    /// Events were dropped (the kernel's queue overflowed), so everything
+    /// below this directory, or the whole watch for `None`, may be stale.
+    Rescan(Option<PathBuf>),
+}
+
 pub struct Watcher {
     cmds: Sender<Option<(PathBuf, bool)>>,
-    pub events: Receiver<PathBuf>,
+    pub events: Receiver<Change>,
 }
 
 impl Watcher {
@@ -23,6 +34,10 @@ impl Watcher {
         let mut watcher = RecommendedWatcher::new(
             move |res: notify::Result<notify::Event>| {
                 let Ok(ev) = res else { return };
+                if ev.need_rescan() {
+                    let _ = ev_tx.send(Change::Rescan(ev.paths.into_iter().next()));
+                    return;
+                }
                 // Opens and closes (including our own reads) and metadata-only
                 // changes don't affect sizes.
                 let relevant = matches!(
@@ -36,7 +51,7 @@ impl Watcher {
                 );
                 if relevant {
                     for p in ev.paths {
-                        let _ = ev_tx.send(p);
+                        let _ = ev_tx.send(Change::Path(p));
                     }
                 }
             },

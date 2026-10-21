@@ -9,7 +9,6 @@ mod platform;
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -19,6 +18,8 @@ use crossbeam_channel::Sender;
 use rayon::{Scope, ThreadPool};
 
 use crate::tree::{Kind, NodeId, flags};
+
+pub use platform::{canonicalize, init};
 
 pub enum Msg {
     /// The scan root itself: its kind and own size.
@@ -96,21 +97,14 @@ struct Ctx {
 /// `Msg::Done`.
 pub fn spawn(req: Request, ids: Arc<AtomicU32>, opts: Options, pool: &ThreadPool, tx: Sender<Msg>) {
     pool.spawn(move || {
-        let meta = fs::symlink_metadata(&req.path);
-        let (kind, disk, root_dev) = match &meta {
-            Ok(m) => (
-                kind_of(m.file_type()),
-                platform::disk_usage(m),
-                platform::device(m),
-            ),
-            Err(_) => (Kind::Other, 0, None),
-        };
+        let root = platform::root_info(&req.path);
+        let (kind, disk) = *root.as_ref().unwrap_or(&(Kind::Other, 0));
         if req.send_root {
             let _ = tx.send(Msg::Root {
                 id: req.id,
                 kind,
                 disk,
-                error: meta.is_err(),
+                error: root.is_err(),
             });
         }
         if kind == Kind::Dir {
@@ -118,7 +112,7 @@ pub fn spawn(req: Request, ids: Arc<AtomicU32>, opts: Options, pool: &ThreadPool
                 tx: tx.clone(),
                 ids,
                 opts,
-                root_dev,
+                root_dev: platform::root_device(&req.path),
                 seen_links: Mutex::new(HashSet::new()),
             };
             rayon::scope(|s| walk(s, req.path, req.id, req.skip.as_deref(), &ctx));
@@ -131,14 +125,11 @@ pub fn spawn(req: Request, ids: Arc<AtomicU32>, opts: Options, pool: &ThreadPool
 /// sends the listing as `Msg::Refresh`.
 pub fn refresh(path: PathBuf, id: NodeId, opts: Options, pool: &ThreadPool, tx: Sender<Msg>) {
     pool.spawn(move || {
-        let root_dev = fs::symlink_metadata(&path)
-            .ok()
-            .and_then(|m| platform::device(&m));
         let ctx = Ctx {
             tx,
             ids: Arc::default(),
             opts,
-            root_dev,
+            root_dev: platform::root_device(&path),
             seen_links: Mutex::default(),
         };
         let (entries, error) = read_dir(&path, &ctx);
@@ -159,7 +150,7 @@ fn walk<'s>(s: &Scope<'s>, path: PathBuf, id: NodeId, skip: Option<&OsStr>, ctx:
     let subdirs: Vec<(PathBuf, NodeId)> = entries
         .iter()
         .enumerate()
-        .filter(|(_, e)| e.kind == Kind::Dir && e.flags & (flags::ERROR | flags::OTHER_FS) == 0)
+        .filter(|(_, e)| e.kind == Kind::Dir && e.flags & flags::NOT_READ == 0)
         .map(|(i, e)| (path.join(&e.name), first + i as NodeId))
         .collect();
     if ctx
@@ -180,58 +171,43 @@ fn walk<'s>(s: &Scope<'s>, path: PathBuf, id: NodeId, skip: Option<&OsStr>, ctx:
 }
 
 fn read_dir(path: &Path, ctx: &Ctx) -> (Vec<Entry>, bool) {
-    let Ok(rd) = fs::read_dir(path) else {
-        return (Vec::new(), true);
-    };
-    let mut error = false;
     let mut entries = Vec::new();
-    for de in rd {
-        let Ok(de) = de else {
-            error = true;
-            continue;
-        };
-        let name = de.file_name();
-        // `DirEntry::metadata` does not follow symlinks (fstatat on unix).
-        let Ok(meta) = de.metadata() else {
+    let res = platform::read_dir(path, |raw| {
+        let Some(info) = raw.info else {
             entries.push(Entry {
-                name,
+                name: raw.name,
                 kind: Kind::Other,
                 disk: 0,
                 flags: flags::ERROR,
             });
-            continue;
+            return;
         };
-        let kind = kind_of(meta.file_type());
-        let mut disk = platform::disk_usage(&meta);
+        let mut disk = info.disk;
         let mut fl = 0;
-        if kind == Kind::Dir {
-            if ctx.opts.one_file_system && platform::device(&meta) != ctx.root_dev {
+        if info.kind == Kind::Dir {
+            if ctx.opts.one_file_system
+                && (info.mount_point || info.dev.is_some_and(|d| Some(d) != ctx.root_dev))
+            {
                 fl |= flags::OTHER_FS;
             }
-        } else if let Some(key) = platform::hardlink_key(&meta)
+            if info.dataless {
+                fl |= flags::CLOUD;
+            }
+        } else if let Some(key) = info.link
             && !ctx.seen_links.lock().unwrap().insert(key)
         {
             disk = 0;
             fl |= flags::HARDLINK_DUP;
         }
         entries.push(Entry {
-            name,
-            kind,
+            name: raw.name,
+            kind: info.kind,
             disk,
             flags: fl,
         });
-    }
-    (entries, error)
-}
-
-fn kind_of(ft: fs::FileType) -> Kind {
-    if ft.is_dir() {
-        Kind::Dir
-    } else if ft.is_file() {
-        Kind::File
-    } else if ft.is_symlink() {
-        Kind::Symlink
-    } else {
-        Kind::Other
+    });
+    match res {
+        Ok(error) => (entries, error),
+        Err(_) => (Vec::new(), true),
     }
 }
