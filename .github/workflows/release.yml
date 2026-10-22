@@ -112,7 +112,12 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref_name }}
       - run: packaging/release-check.sh "${{ inputs.tag || github.ref_name }}"
-      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      # Installed explicitly, as the Linux jobs do: whether rustup installs a
+      # missing pinned toolchain on its own for `target add` has varied
+      # between rustup versions.
+      - run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal \
+            --target aarch64-apple-darwin,x86_64-apple-darwin
       - run: |
           cargo build --release --locked --target aarch64-apple-darwin
           cargo build --release --locked --target x86_64-apple-darwin
