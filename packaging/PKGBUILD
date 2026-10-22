@@ -1,6 +1,6 @@
 # Maintainer: Andrew Imm
 pkgname=dvt
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Read-only terminal disk usage visualizer with treemap and list views'
 arch=('x86_64' 'aarch64')
